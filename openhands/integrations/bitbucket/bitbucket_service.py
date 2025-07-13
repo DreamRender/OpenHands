@@ -20,20 +20,21 @@ from openhands.utils.import_utils import get_impl
 
 
 class BitBucketService(BaseGitService, GitService):
-    """Default implementation of GitService for Bitbucket integration.
+    """
+    Bitbucket集成的GitService默认实现。
 
-    This is an extension point in OpenHands that allows applications to customize Bitbucket
-    integration behavior. Applications can substitute their own implementation by:
-    1. Creating a class that inherits from GitService
-    2. Implementing all required methods
-    3. Setting server_config.bitbucket_service_class to the fully qualified name of the class
+    这是OpenHands中的一个扩展点，允许应用程序自定义Bitbucket
+    集成行为。应用程序可以通过以下方式替换自己的实现：
+    1. 创建一个继承自GitService的类
+    2. 实现所有必需的方法
+    3. 设置server_config.bitbucket_service_class为该类的完全限定名
 
-    The class is instantiated via get_impl() in openhands.server.shared.py.
+    该类通过openhands.server.shared.py中的get_impl()实例化。
     """
 
-    BASE_URL = 'https://api.bitbucket.org/2.0'
-    token: SecretStr = SecretStr('')
-    refresh = False
+    BASE_URL = 'https://api.bitbucket.org/2.0'   # Bitbucket API基础URL
+    token: SecretStr = SecretStr('')             # 认证token
+    refresh = False                              # 是否刷新token标志
 
     def __init__(
         self,
@@ -44,6 +45,17 @@ class BitBucketService(BaseGitService, GitService):
         external_token_manager: bool = False,
         base_domain: str | None = None,
     ):
+        """
+        初始化BitBucketService实例。
+        
+        Args:
+            user_id (str | None): 用户ID
+            external_auth_id (str | None): 外部认证ID
+            external_auth_token (SecretStr | None): 外部认证token
+            token (SecretStr | None): Bitbucket API token
+            external_token_manager (bool): 是否使用外部token管理器
+            base_domain (str | None): 自定义Bitbucket实例的域名
+        """
         self.user_id = user_id
         self.external_token_manager = external_token_manager
         self.external_auth_id = external_auth_id
@@ -53,31 +65,63 @@ class BitBucketService(BaseGitService, GitService):
         if token:
             self.token = token
         if base_domain:
+            # 如果提供了自定义域名，更新API URL
             self.BASE_URL = f'https://api.{base_domain}/2.0'
 
     @property
     def provider(self) -> str:
+        """
+        返回服务提供商标识符。
+        
+        Returns:
+            str: 'bitbucket'
+        """
         return ProviderType.BITBUCKET.value
 
     async def get_latest_token(self) -> SecretStr | None:
-        """Get latest working token of the user."""
+        """
+        获取用户的最新有效token。
+        
+        Returns:
+            SecretStr | None: 当前token
+        """
         return self.token
 
     def _has_token_expired(self, status_code: int) -> bool:
+        """
+        检查token是否已过期。
+        
+        Args:
+            status_code (int): HTTP状态码
+            
+        Returns:
+            bool: 如果状态码为401则返回True，表示token已过期
+        """
         return status_code == 401
 
     async def _get_bitbucket_headers(self) -> dict[str, str]:
-        """Get headers for Bitbucket API requests."""
+        """
+        获取Bitbucket API请求的头信息。
+        
+        支持两种认证方式：
+        1. Basic认证（username:password格式的token）
+        2. Bearer认证（纯token）
+        
+        Returns:
+            dict[str, str]: 包含Authorization和Accept头的字典
+        """
         token_value = self.token.get_secret_value()
 
-        # Check if the token contains a colon, which indicates it's in username:password format
+        # 检查token是否包含冒号，这表示它是username:password格式
         if ':' in token_value:
+            # 使用Basic认证
             auth_str = base64.b64encode(token_value.encode()).decode()
             return {
                 'Authorization': f'Basic {auth_str}',
                 'Accept': 'application/json',
             }
         else:
+            # 使用Bearer认证
             return {
                 'Authorization': f'Bearer {token_value}',
                 'Accept': 'application/json',
@@ -89,16 +133,16 @@ class BitBucketService(BaseGitService, GitService):
         params: dict | None = None,
         method: RequestMethod = RequestMethod.GET,
     ) -> tuple[Any, dict]:
-        """Make a request to the Bitbucket API.
+        """
+        向Bitbucket API发起请求。
 
         Args:
-            url: The URL to request
-            params: Optional parameters for the request
-            method: The HTTP method to use
+            url (str): 请求的URL
+            params (dict | None): 请求的可选参数
+            method (RequestMethod): 使用的HTTP方法
 
         Returns:
-            A tuple of (response_data, response_headers)
-
+            tuple[Any, dict]: 包含响应数据和响应头的元组
         """
         try:
             async with httpx.AsyncClient() as client:
@@ -106,6 +150,7 @@ class BitBucketService(BaseGitService, GitService):
                 response = await self.execute_request(
                     client, url, bitbucket_headers, params, method
                 )
+                # 如果需要刷新且token已过期，则处理token刷新
                 if self.refresh and self._has_token_expired(response.status_code):
                     await self.get_latest_token()
                     bitbucket_headers = await self._get_bitbucket_headers()
@@ -124,7 +169,12 @@ class BitBucketService(BaseGitService, GitService):
             raise self.handle_http_error(e)
 
     async def get_user(self) -> User:
-        """Get the authenticated user's information."""
+        """
+        获取认证用户的信息。
+        
+        Returns:
+            User: 用户信息对象
+        """
         url = f'{self.BASE_URL}/user'
         data, _ = await self._make_request(url)
 
@@ -135,7 +185,7 @@ class BitBucketService(BaseGitService, GitService):
             login=data.get('username', ''),
             avatar_url=data.get('links', {}).get('avatar', {}).get('href', ''),
             name=data.get('display_name'),
-            email=None,  # Bitbucket API doesn't return email in this endpoint
+            email=None,  # Bitbucket API在此端点中不返回邮箱
         )
 
     async def search_repositories(
@@ -145,23 +195,37 @@ class BitBucketService(BaseGitService, GitService):
         sort: str,
         order: str,
     ) -> list[Repository]:
-        """Search for repositories."""
-        # Bitbucket doesn't have a dedicated search endpoint like GitHub
+        """
+        搜索Repository。
+        
+        Args:
+            query (str): 搜索查询字符串
+            per_page (int): 每页返回的结果数量
+            sort (str): 排序字段
+            order (str): 排序顺序
+            
+        Returns:
+            list[Repository]: 搜索结果Repository列表
+            
+        Note:
+            Bitbucket没有像GitHub那样的专用搜索端点，所以返回空列表。
+        """
+        # Bitbucket没有像GitHub那样的专用搜索端点
         return []
 
     async def _fetch_paginated_data(
         self, url: str, params: dict, max_items: int
     ) -> list[dict]:
         """
-        Fetch data with pagination support for Bitbucket API.
+        为Bitbucket API获取带分页支持的数据。
 
         Args:
-            url: The API endpoint URL
-            params: Query parameters for the request
-            max_items: Maximum number of items to fetch
+            url (str): API端点URL
+            params (dict): 请求的查询参数
+            max_items (int): 要获取的最大项目数量
 
         Returns:
-            List of data items from all pages
+            list[dict]: 来自所有页面的数据项列表
         """
         all_items: list[dict] = []
         current_url = url
@@ -169,34 +233,41 @@ class BitBucketService(BaseGitService, GitService):
         while current_url and len(all_items) < max_items:
             response, _ = await self._make_request(current_url, params)
 
-            # Extract items from response
+            # 从响应中提取项目
             page_items = response.get('values', [])
-            if not page_items:  # No more items
+            if not page_items:  # 没有更多项目
                 break
 
             all_items.extend(page_items)
 
-            # Get the next page URL from the response
+            # 从响应中获取下一页URL
             current_url = response.get('next')
 
-            # Clear params for subsequent requests since the next URL already contains all parameters
+            # 清除后续请求的参数，因为下一页URL已经包含所有参数
             params = {}
 
-        return all_items[:max_items]  # Trim to max_items if needed
+        return all_items[:max_items]  # 如果需要，截取到max_items
 
     async def get_repositories(self, sort: str, app_mode: AppMode) -> list[Repository]:
-        """Get repositories for the authenticated user using workspaces endpoint.
-
-        This method gets all repositories (both public and private) that the user has access to
-        by iterating through their workspaces and fetching repositories from each workspace.
-        This approach is more comprehensive and efficient than the previous implementation
-        that made separate calls for public and private repositories.
         """
-        MAX_REPOS = 1000
-        PER_PAGE = 100  # Maximum allowed by Bitbucket API
+        使用workspace端点获取认证用户的Repository。
+
+        此方法通过遍历用户的workspace并从每个workspace获取Repository
+        来获取用户有权访问的所有Repository（公开和私有）。
+        这种方法比之前分别调用公开和私有Repository的实现更全面、更高效。
+        
+        Args:
+            sort (str): 排序方式
+            app_mode (AppMode): 应用模式
+            
+        Returns:
+            list[Repository]: 用户的Repository列表
+        """
+        MAX_REPOS = 1000        # 最大Repository数量
+        PER_PAGE = 100          # Bitbucket API允许的每页最大数量
         repositories: list[Repository] = []
 
-        # Get user's workspaces with pagination
+        # 使用分页获取用户的workspace
         workspaces_url = f'{self.BASE_URL}/workspaces'
         workspaces = await self._fetch_paginated_data(workspaces_url, {}, MAX_REPOS)
 
@@ -205,25 +276,25 @@ class BitBucketService(BaseGitService, GitService):
             if not workspace_slug:
                 continue
 
-            # Get repositories for this workspace with pagination
+            # 使用分页获取此workspace的Repository
             workspace_repos_url = f'{self.BASE_URL}/repositories/{workspace_slug}'
 
-            # Map sort parameter to Bitbucket API compatible values and ensure descending order
-            # to show most recently changed repos at the top
+            # 将排序参数映射到Bitbucket API兼容的值，并确保降序排列
+            # 以便在顶部显示最近更改的Repository
             bitbucket_sort = sort
             if sort == 'pushed':
-                # Bitbucket doesn't support 'pushed', use 'updated_on' instead
+                # Bitbucket不支持'pushed'，使用'updated_on'代替
                 bitbucket_sort = (
-                    '-updated_on'  # Use negative prefix for descending order
+                    '-updated_on'  # 使用负号前缀表示降序
                 )
             elif sort == 'updated':
                 bitbucket_sort = '-updated_on'
             elif sort == 'created':
                 bitbucket_sort = '-created_on'
             elif sort == 'full_name':
-                bitbucket_sort = 'name'  # Bitbucket uses 'name' not 'full_name'
+                bitbucket_sort = 'name'  # Bitbucket使用'name'而不是'full_name'
             else:
-                # Default to most recently updated first
+                # 默认按最近更新排序
                 bitbucket_sort = '-updated_on'
 
             params = {
@@ -231,7 +302,7 @@ class BitBucketService(BaseGitService, GitService):
                 'sort': bitbucket_sort,
             }
 
-            # Fetch all repositories for this workspace with pagination
+            # 使用分页获取此workspace的所有Repository
             workspace_repos = await self._fetch_paginated_data(
                 workspace_repos_url, params, MAX_REPOS - len(repositories)
             )
@@ -244,31 +315,50 @@ class BitBucketService(BaseGitService, GitService):
                         full_name=f'{repo.get("workspace", {}).get("slug", "")}/{repo.get("slug", "")}',
                         git_provider=ProviderType.BITBUCKET,
                         is_public=repo.get('is_private', True) is False,
-                        stargazers_count=None,  # Bitbucket doesn't have stars
+                        stargazers_count=None,  # Bitbucket没有星标功能
                         pushed_at=repo.get('updated_on'),
                     )
                 )
 
-                # Stop if we've reached the maximum number of repositories
+                # 如果已达到最大Repository数量，停止
                 if len(repositories) >= MAX_REPOS:
                     break
 
-            # Stop if we've reached the maximum number of repositories
+            # 如果已达到最大Repository数量，停止
             if len(repositories) >= MAX_REPOS:
                 break
 
         return repositories
 
     async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks for the authenticated user across all repositories."""
-        # TODO: implemented suggested tasks
+        """
+        获取认证用户在所有Repository中的建议任务。
+        
+        Returns:
+            list[SuggestedTask]: 建议任务列表
+            
+        Note:
+            TODO: 实现建议任务功能
+        """
+        # TODO: 实现建议任务
         return []
 
     async def get_repository_details_from_repo_name(
         self, repository: str
     ) -> Repository:
-        """Gets all repository details from repository name."""
-        # Extract owner and repo from the repository string (e.g., "owner/repo")
+        """
+        根据Repository名称获取所有Repository详细信息。
+        
+        Args:
+            repository (str): Repository名称（格式：owner/repo）
+            
+        Returns:
+            Repository: Repository详细信息
+            
+        Raises:
+            ValueError: 当Repository名称格式无效时抛出
+        """
+        # 从Repository字符串中提取owner和repo（例如："owner/repo"）
         parts = repository.split('/')
         if len(parts) < 2:
             raise ValueError(f'Invalid repository name: {repository}')
@@ -285,13 +375,24 @@ class BitBucketService(BaseGitService, GitService):
             full_name=f'{data.get("workspace", {}).get("slug", "")}/{data.get("slug", "")}',
             git_provider=ProviderType.BITBUCKET,
             is_public=data.get('is_private', True) is False,
-            stargazers_count=None,  # Bitbucket doesn't have stars
+            stargazers_count=None,  # Bitbucket没有星标功能
             pushed_at=data.get('updated_on'),
         )
 
     async def get_branches(self, repository: str) -> list[Branch]:
-        """Get branches for a repository."""
-        # Extract owner and repo from the repository string (e.g., "owner/repo")
+        """
+        获取Repository的分支。
+        
+        Args:
+            repository (str): Repository名称（格式：owner/repo）
+            
+        Returns:
+            list[Branch]: Repository的分支列表
+            
+        Raises:
+            ValueError: 当Repository名称格式无效时抛出
+        """
+        # 从Repository字符串中提取owner和repo（例如："owner/repo"）
         parts = repository.split('/')
         if len(parts) < 2:
             raise ValueError(f'Invalid repository name: {repository}')
@@ -301,16 +402,16 @@ class BitBucketService(BaseGitService, GitService):
 
         url = f'{self.BASE_URL}/repositories/{owner}/{repo}/refs/branches'
 
-        # Set maximum branches to fetch (similar to GitHub/GitLab implementations)
+        # 设置最大分支数量（类似于GitHub/GitLab实现）
         MAX_BRANCHES = 1000
         PER_PAGE = 100
 
         params = {
             'pagelen': PER_PAGE,
-            'sort': '-target.date',  # Sort by most recent commit date, descending
+            'sort': '-target.date',  # 按最近提交日期排序，降序
         }
 
-        # Fetch all branches with pagination
+        # 使用分页获取所有分支
         branch_data = await self._fetch_paginated_data(url, params, MAX_BRANCHES)
 
         branches = []
@@ -319,7 +420,7 @@ class BitBucketService(BaseGitService, GitService):
                 Branch(
                     name=branch.get('name', ''),
                     commit_sha=branch.get('target', {}).get('hash', ''),
-                    protected=False,  # Bitbucket doesn't expose this in the API
+                    protected=False,  # Bitbucket在API中不暴露此信息
                     last_push_date=branch.get('target', {}).get('date', None),
                 )
             )
@@ -335,20 +436,24 @@ class BitBucketService(BaseGitService, GitService):
         body: str | None = None,
         draft: bool = False,
     ) -> str:
-        """Creates a pull request in Bitbucket.
+        """
+        在Bitbucket中创建Pull Request。
 
         Args:
-            repo_name: The repository name in the format "workspace/repo"
-            source_branch: The source branch name
-            target_branch: The target branch name
-            title: The title of the pull request
-            body: The description of the pull request
-            draft: Whether to create a draft pull request
+            repo_name (str): Repository名称，格式为"workspace/repo"
+            source_branch (str): 源分支名称
+            target_branch (str): 目标分支名称
+            title (str): Pull Request的标题
+            body (str | None): Pull Request的描述
+            draft (bool): 是否创建草稿Pull Request
 
         Returns:
-            The URL of the created pull request
+            str: 创建的Pull Request的URL
+            
+        Raises:
+            ValueError: 当Repository名称格式无效时抛出
         """
-        # Extract owner and repo from the repository string (e.g., "owner/repo")
+        # 从Repository字符串中提取owner和repo（例如："owner/repo"）
         parts = repo_name.split('/')
         if len(parts) < 2:
             raise ValueError(f'Invalid repository name: {repo_name}')
@@ -371,12 +476,14 @@ class BitBucketService(BaseGitService, GitService):
             url=url, params=payload, method=RequestMethod.POST
         )
 
-        # Return the URL to the pull request
+        # 返回Pull Request的URL
         return data.get('links', {}).get('html', {}).get('href', '')
 
 
+# 从环境变量获取Bitbucket服务类配置
 bitbucket_service_cls = os.environ.get(
     'OPENHANDS_BITBUCKET_SERVICE_CLS',
     'openhands.integrations.bitbucket.bitbucket_service.BitBucketService',
 )
+# 使用get_impl获取实际的Bitbucket服务实现类
 BitBucketServiceImpl = get_impl(BitBucketService, bitbucket_service_cls)

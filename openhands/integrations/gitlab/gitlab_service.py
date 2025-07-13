@@ -21,22 +21,23 @@ from openhands.utils.import_utils import get_impl
 
 
 class GitLabService(BaseGitService, GitService):
-    """Default implementation of GitService for GitLab integration.
+    """
+    GitLab集成的GitService默认实现。
 
-    TODO: This doesn't seem a good candidate for the get_impl() pattern. What are the abstract methods we should actually separate and implement here?
-    This is an extension point in OpenHands that allows applications to customize GitLab
-    integration behavior. Applications can substitute their own implementation by:
-    1. Creating a class that inherits from GitService
-    2. Implementing all required methods
-    3. Setting server_config.gitlab_service_class to the fully qualified name of the class
+    TODO: 这似乎不是get_impl()模式的好候选。我们应该实际分离和实现哪些抽象方法？
+    这是OpenHands中的一个扩展点，允许应用程序自定义GitLab
+    集成行为。应用程序可以通过以下方式替换自己的实现：
+    1. 创建一个继承自GitService的类
+    2. 实现所有必需的方法
+    3. 设置server_config.gitlab_service_class为该类的完全限定名
 
-    The class is instantiated via get_impl() in openhands.server.shared.py.
+    该类通过openhands.server.shared.py中的get_impl()实例化。
     """
 
-    BASE_URL = 'https://gitlab.com/api/v4'
-    GRAPHQL_URL = 'https://gitlab.com/api/graphql'
-    token: SecretStr = SecretStr('')
-    refresh = False
+    BASE_URL = 'https://gitlab.com/api/v4'        # GitLab API基础URL
+    GRAPHQL_URL = 'https://gitlab.com/api/graphql'  # GitLab GraphQL API URL
+    token: SecretStr = SecretStr('')              # 认证token
+    refresh = False                               # 是否刷新token标志
 
     def __init__(
         self,
@@ -47,6 +48,17 @@ class GitLabService(BaseGitService, GitService):
         external_token_manager: bool = False,
         base_domain: str | None = None,
     ):
+        """
+        初始化GitLabService实例。
+        
+        Args:
+            user_id (str | None): 用户ID
+            external_auth_id (str | None): 外部认证ID
+            external_auth_token (SecretStr | None): 外部认证token
+            token (SecretStr | None): GitLab API token
+            external_token_manager (bool): 是否使用外部token管理器
+            base_domain (str | None): 自定义GitLab实例的域名
+        """
         self.user_id = user_id
         self.external_token_manager = external_token_manager
 
@@ -54,18 +66,31 @@ class GitLabService(BaseGitService, GitService):
             self.token = token
 
         if base_domain:
+            # 如果提供了自定义域名，更新API URL
             self.BASE_URL = f'https://{base_domain}/api/v4'
             self.GRAPHQL_URL = f'https://{base_domain}/api/graphql'
 
     @property
     def provider(self) -> str:
+        """
+        返回服务提供商标识符。
+        
+        Returns:
+            str: 'gitlab'
+        """
         return ProviderType.GITLAB.value
 
     async def _get_gitlab_headers(self) -> dict[str, Any]:
         """
-        Retrieve the GitLab Token to construct the headers
+        获取GitLab API请求头。
+        
+        检索GitLab Token来构造请求头。
+        
+        Returns:
+            dict[str, Any]: 包含Authorization头的字典
         """
         if not self.token:
+            # 如果没有token，尝试获取最新token
             latest_token = await self.get_latest_token()
             if latest_token:
                 self.token = latest_token
@@ -75,9 +100,24 @@ class GitLabService(BaseGitService, GitService):
         }
 
     def _has_token_expired(self, status_code: int) -> bool:
+        """
+        检查token是否已过期。
+        
+        Args:
+            status_code (int): HTTP状态码
+            
+        Returns:
+            bool: 如果状态码为401则返回True，表示token已过期
+        """
         return status_code == 401
 
     async def get_latest_token(self) -> SecretStr | None:
+        """
+        获取最新的token。
+        
+        Returns:
+            SecretStr | None: 当前token
+        """
         return self.token
 
     async def _make_request(
@@ -86,11 +126,26 @@ class GitLabService(BaseGitService, GitService):
         params: dict | None = None,
         method: RequestMethod = RequestMethod.GET,
     ) -> tuple[Any, dict]:
+        """
+        向GitLab API发起请求。
+        
+        Args:
+            url (str): 请求URL
+            params (dict | None): 请求参数
+            method (RequestMethod): HTTP请求方法
+            
+        Returns:
+            tuple[Any, dict]: 包含响应数据和头信息的元组
+            
+        Raises:
+            HTTPStatusError: HTTP状态错误
+            HTTPError: HTTP通信错误
+        """
         try:
             async with httpx.AsyncClient() as client:
                 gitlab_headers = await self._get_gitlab_headers()
 
-                # Make initial request
+                # 发起初始请求
                 response = await self.execute_request(
                     client=client,
                     url=url,
@@ -99,7 +154,7 @@ class GitLabService(BaseGitService, GitService):
                     method=method,
                 )
 
-                # Handle token refresh if needed
+                # 如果需要刷新且token已过期，则处理token刷新
                 if self.refresh and self._has_token_expired(response.status_code):
                     await self.get_latest_token()
                     gitlab_headers = await self._get_gitlab_headers()
@@ -113,6 +168,7 @@ class GitLabService(BaseGitService, GitService):
 
                 response.raise_for_status()
                 headers = {}
+                # 保存分页链接信息
                 if 'Link' in response.headers:
                     headers['Link'] = response.headers['Link']
 
@@ -127,21 +183,24 @@ class GitLabService(BaseGitService, GitService):
         self, query: str, variables: dict[str, Any] | None = None
     ) -> Any:
         """
-        Execute a GraphQL query against the GitLab GraphQL API
-
+        对GitLab GraphQL API执行GraphQL查询。
+        
         Args:
-            query: The GraphQL query string
-            variables: Optional variables for the GraphQL query
-
+            query (str): GraphQL查询字符串
+            variables (dict[str, Any] | None): GraphQL查询的可选变量
+            
         Returns:
-            The data portion of the GraphQL response
+            Any: GraphQL响应的数据部分
+            
+        Raises:
+            UnknownException: GraphQL错误或HTTP错误
         """
         if variables is None:
             variables = {}
         try:
             async with httpx.AsyncClient() as client:
                 gitlab_headers = await self._get_gitlab_headers()
-                # Add content type header for GraphQL
+                # 为GraphQL添加Content-Type头
                 gitlab_headers['Content-Type'] = 'application/json'
 
                 payload = {
@@ -153,6 +212,7 @@ class GitLabService(BaseGitService, GitService):
                     self.GRAPHQL_URL, headers=gitlab_headers, json=payload
                 )
 
+                # 处理token刷新
                 if self.refresh and self._has_token_expired(response.status_code):
                     await self.get_latest_token()
                     gitlab_headers = await self._get_gitlab_headers()
@@ -164,7 +224,7 @@ class GitLabService(BaseGitService, GitService):
                 response.raise_for_status()
                 result = response.json()
 
-                # Check for GraphQL errors
+                # 检查GraphQL错误
                 if 'errors' in result:
                     error_message = result['errors'][0].get(
                         'message', 'Unknown GraphQL error'
@@ -178,11 +238,17 @@ class GitLabService(BaseGitService, GitService):
             raise self.handle_http_error(e)
 
     async def get_user(self) -> User:
+        """
+        获取当前认证用户的信息。
+        
+        Returns:
+            User: 用户信息对象
+        """
         url = f'{self.BASE_URL}/user'
         response, _ = await self._make_request(url)
 
-        # Use a default avatar URL if not provided
-        # In some self-hosted GitLab instances, the avatar_url field may be returned as None.
+        # 如果未提供头像URL，使用默认值
+        # 在一些自托管的GitLab实例中，avatar_url字段可能返回None
         avatar_url = response.get('avatar_url') or ''
 
         return User(
@@ -197,13 +263,25 @@ class GitLabService(BaseGitService, GitService):
     async def search_repositories(
         self, query: str, per_page: int = 30, sort: str = 'updated', order: str = 'desc'
     ) -> list[Repository]:
+        """
+        搜索公开的Repository。
+        
+        Args:
+            query (str): 搜索查询字符串
+            per_page (int): 每页返回的结果数量
+            sort (str): 排序字段
+            order (str): 排序顺序
+            
+        Returns:
+            list[Repository]: 搜索结果Repository列表
+        """
         url = f'{self.BASE_URL}/projects'
         params = {
             'search': query,
             'per_page': per_page,
             'order_by': 'last_activity_at',
             'sort': order,
-            'visibility': 'public',
+            'visibility': 'public',  # 只搜索公开的项目
         }
 
         response, _ = await self._make_request(url, params)
@@ -221,13 +299,23 @@ class GitLabService(BaseGitService, GitService):
         return repos
 
     async def get_repositories(self, sort: str, app_mode: AppMode) -> list[Repository]:
-        MAX_REPOS = 1000
-        PER_PAGE = 100  # Maximum allowed by GitLab API
+        """
+        获取用户的Repository列表。
+        
+        Args:
+            sort (str): 排序方式
+            app_mode (AppMode): 应用模式
+            
+        Returns:
+            list[Repository]: 用户的Repository列表
+        """
+        MAX_REPOS = 1000        # 最大Repository数量
+        PER_PAGE = 100          # GitLab API允许的每页最大数量
         all_repos: list[dict] = []
         page = 1
 
         url = f'{self.BASE_URL}/projects'
-        # Map GitHub's sort values to GitLab's order_by values
+        # 将GitHub的排序值映射到GitLab的order_by值
         order_by = {
             'pushed': 'last_activity_at',
             'updated': 'last_activity_at',
@@ -240,23 +328,23 @@ class GitLabService(BaseGitService, GitService):
                 'page': str(page),
                 'per_page': str(PER_PAGE),
                 'order_by': order_by,
-                'sort': 'desc',  # GitLab uses sort for direction (asc/desc)
-                'membership': 1,  # Use 1 instead of True
+                'sort': 'desc',    # GitLab使用sort表示方向（asc/desc）
+                'membership': 1,   # 使用1而不是True
             }
             response, headers = await self._make_request(url, params)
 
-            if not response:  # No more repositories
+            if not response:  # 没有更多Repository
                 break
 
             all_repos.extend(response)
             page += 1
 
-            # Check if we've reached the last page
+            # 检查是否已到达最后一页
             link_header = headers.get('Link', '')
             if 'rel="next"' not in link_header:
                 break
 
-        # Trim to MAX_REPOS if needed and convert to Repository objects
+        # 如果需要，截取到MAX_REPOS数量并转换为Repository对象
         all_repos = all_repos[:MAX_REPOS]
         return [
             Repository(
@@ -270,17 +358,19 @@ class GitLabService(BaseGitService, GitService):
         ]
 
     async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks for the authenticated user across all repositories.
+        """
+        获取认证用户在所有Repository中的建议任务。
 
         Returns:
-        - Merge requests authored by the user.
-        - Issues assigned to the user.
+            list[SuggestedTask]: 建议任务列表，包括：
+            - 用户创建的Merge Request
+            - 分配给用户的Issue
         """
-        # Get user info to use in queries
+        # 获取用户信息用于查询
         user = await self.get_user()
         username = user.login
 
-        # GraphQL query to get merge requests
+        # 获取Merge Request的GraphQL查询
         query = """
         query GetUserTasks {
           currentUser {
@@ -318,31 +408,33 @@ class GitLabService(BaseGitService, GitService):
         try:
             tasks: list[SuggestedTask] = []
 
-            # Get merge requests using GraphQL
+            # 使用GraphQL获取Merge Request
             response = await self.execute_graphql_query(query)
             data = response.get('currentUser', {})
 
-            # Process merge requests
+            # 处理Merge Request
             merge_requests = data.get('authoredMergeRequests', {}).get('nodes', [])
             for mr in merge_requests:
                 repo_name = mr.get('project', {}).get('fullPath', '')
                 mr_number = mr.get('iid')
                 title = mr.get('title', '')
 
-                # Start with default task type
+                # 从默认任务类型开始
                 task_type = TaskType.OPEN_PR
 
-                # Check for specific states
+                # 检查特定状态
                 if mr.get('conflicts'):
+                    # 有合并冲突
                     task_type = TaskType.MERGE_CONFLICTS
                 elif (
                     mr.get('pipelines', {}).get('nodes', [])
                     and mr.get('pipelines', {}).get('nodes', [])[0].get('status')
                     == 'FAILED'
                 ):
+                    # CI管道失败
                     task_type = TaskType.FAILING_CHECKS
                 else:
-                    # Check for unresolved comments
+                    # 检查未解决的评论
                     has_unresolved_comments = False
                     for discussion in mr.get('discussions', {}).get('nodes', []):
                         for note in discussion.get('notes', {}).get('nodes', []):
@@ -355,7 +447,7 @@ class GitLabService(BaseGitService, GitService):
                     if has_unresolved_comments:
                         task_type = TaskType.UNRESOLVED_COMMENTS
 
-                # Only add the task if it's not OPEN_PR
+                # 只有当任务类型不是OPEN_PR时才添加任务
                 if task_type != TaskType.OPEN_PR:
                     tasks.append(
                         SuggestedTask(
@@ -367,7 +459,7 @@ class GitLabService(BaseGitService, GitService):
                         )
                     )
 
-            # Get assigned issues using REST API
+            # 使用REST API获取分配的Issue
             url = f'{self.BASE_URL}/issues'
             params = {
                 'assignee_username': username,
@@ -379,8 +471,9 @@ class GitLabService(BaseGitService, GitService):
                 method=RequestMethod.GET, url=url, params=params
             )
 
-            # Process issues
+            # 处理Issue
             for issue in issues_response:
+                # 从references中提取Repository名称
                 repo_name = (
                     issue.get('references', {}).get('full', '').split('#')[0].strip()
                 )
@@ -399,11 +492,22 @@ class GitLabService(BaseGitService, GitService):
 
             return tasks
         except Exception:
+            # 如果出现任何错误，返回空列表
             return []
 
     async def get_repository_details_from_repo_name(
         self, repository: str
     ) -> Repository:
+        """
+        根据Repository名称获取Repository详细信息。
+        
+        Args:
+            repository (str): Repository名称（格式：owner/repo）
+            
+        Returns:
+            Repository: Repository详细信息
+        """
+        # URL编码Repository名称（将/替换为%2F）
         encoded_name = repository.replace('/', '%2F')
 
         url = f'{self.BASE_URL}/projects/{encoded_name}'
@@ -418,23 +522,32 @@ class GitLabService(BaseGitService, GitService):
         )
 
     async def get_branches(self, repository: str) -> list[Branch]:
-        """Get branches for a repository"""
+        """
+        获取Repository的分支列表。
+        
+        Args:
+            repository (str): Repository名称
+            
+        Returns:
+            list[Branch]: 分支列表
+        """
+        # URL编码Repository名称
         encoded_name = repository.replace('/', '%2F')
         url = f'{self.BASE_URL}/projects/{encoded_name}/repository/branches'
 
-        # Set maximum branches to fetch (10 pages with 100 per page)
+        # 设置最大分支数量（10页，每页100个）
         MAX_BRANCHES = 1000
         PER_PAGE = 100
 
         all_branches: list[Branch] = []
         page = 1
 
-        # Fetch up to 10 pages of branches
+        # 获取最多10页的分支
         while page <= 10 and len(all_branches) < MAX_BRANCHES:
             params = {'per_page': str(PER_PAGE), 'page': str(page)}
             response, headers = await self._make_request(url, params)
 
-            if not response:  # No more branches
+            if not response:  # 没有更多分支
                 break
 
             for branch_data in response:
@@ -448,7 +561,7 @@ class GitLabService(BaseGitService, GitService):
 
             page += 1
 
-            # Check if we've reached the last page
+            # 检查是否已到达最后一页
             link_header = headers.get('Link', '')
             if 'rel="next"' not in link_header:
                 break
@@ -465,30 +578,28 @@ class GitLabService(BaseGitService, GitService):
         labels: list[str] | None = None,
     ) -> str:
         """
-        Creates a merge request in GitLab
-
+        在GitLab中创建Merge Request。
+        
         Args:
-            id: The ID or URL-encoded path of the project
-            source_branch: The name of the branch where your changes are implemented
-            target_branch: The name of the branch you want the changes merged into
-            title: The title of the merge request (optional, defaults to a generic title)
-            description: The description of the merge request (optional)
-            labels: A list of labels to apply to the merge request (optional)
-
+            id (int | str): 项目的ID或URL编码路径
+            source_branch (str): 实现更改的分支名称
+            target_branch (str): 希望将更改合并到的分支名称
+            title (str): Merge Request的标题
+            description (str | None): Merge Request的描述（可选）
+            labels (list[str] | None): 应用到Merge Request的标签列表（可选）
+            
         Returns:
-            - MR URL when successful
-            - Error message when unsuccessful
+            str: 成功时返回MR URL，失败时返回错误消息
         """
-
-        # Convert string ID to URL-encoded path if needed
+        # 如果需要，将字符串ID转换为URL编码路径
         project_id = str(id).replace('/', '%2F') if isinstance(id, str) else id
         url = f'{self.BASE_URL}/projects/{project_id}/merge_requests'
 
-        # Set default description if none provided
+        # 如果未提供描述，设置默认描述
         if not description:
             description = f'Merging changes from {source_branch} into {target_branch}'
 
-        # Prepare the request payload
+        # 准备请求负载
         payload = {
             'source_branch': source_branch,
             'target_branch': target_branch,
@@ -496,11 +607,11 @@ class GitLabService(BaseGitService, GitService):
             'description': description,
         }
 
-        # Add labels if provided
+        # 如果提供了标签，添加标签
         if labels and len(labels) > 0:
             payload['labels'] = ','.join(labels)
 
-        # Make the POST request to create the MR
+        # 发起POST请求创建MR
         response, _ = await self._make_request(
             url=url, params=payload, method=RequestMethod.POST
         )
@@ -508,8 +619,10 @@ class GitLabService(BaseGitService, GitService):
         return response['web_url']
 
 
+# 从环境变量获取GitLab服务类配置
 gitlab_service_cls = os.environ.get(
     'OPENHANDS_GITLAB_SERVICE_CLS',
     'openhands.integrations.gitlab.gitlab_service.GitLabService',
 )
+# 使用get_impl获取实际的GitLab服务实现类
 GitLabServiceImpl = get_impl(GitLabService, gitlab_service_cls)

@@ -28,21 +28,22 @@ from openhands.utils.import_utils import get_impl
 
 
 class GitHubService(BaseGitService, GitService):
-    """Default implementation of GitService for GitHub integration.
+    """
+    GitHub集成的GitService默认实现。
 
-    TODO: This doesn't seem a good candidate for the get_impl() pattern. What are the abstract methods we should actually separate and implement here?
-    This is an extension point in OpenHands that allows applications to customize GitHub
-    integration behavior. Applications can substitute their own implementation by:
-    1. Creating a class that inherits from GitService
-    2. Implementing all required methods
-    3. Setting server_config.github_service_class to the fully qualified name of the class
+    TODO: 这似乎不是get_impl()模式的好候选。我们应该实际分离和实现哪些抽象方法？
+    这是OpenHands中的一个扩展点，允许应用程序自定义GitHub
+    集成行为。应用程序可以通过以下方式替换自己的实现：
+    1. 创建一个继承自GitService的类
+    2. 实现所有必需的方法
+    3. 设置server_config.github_service_class为该类的完全限定名
 
-    The class is instantiated via get_impl() in openhands.server.shared.py.
+    该类通过openhands.server.shared.py中的get_impl()实例化。
     """
 
-    BASE_URL = 'https://api.github.com'
-    token: SecretStr = SecretStr('')
-    refresh = False
+    BASE_URL = 'https://api.github.com'          # GitHub API基础URL
+    token: SecretStr = SecretStr('')             # 认证token
+    refresh = False                              # 是否刷新token标志
 
     def __init__(
         self,
@@ -53,6 +54,17 @@ class GitHubService(BaseGitService, GitService):
         external_token_manager: bool = False,
         base_domain: str | None = None,
     ):
+        """
+        初始化GitHubService实例。
+        
+        Args:
+            user_id (str | None): 用户ID
+            external_auth_id (str | None): 外部认证ID
+            external_auth_token (SecretStr | None): 外部认证token
+            token (SecretStr | None): GitHub API token
+            external_token_manager (bool): 是否使用外部token管理器
+            base_domain (str | None): 自定义GitHub Enterprise实例的域名
+        """
         self.user_id = user_id
         self.external_token_manager = external_token_manager
 
@@ -60,6 +72,7 @@ class GitHubService(BaseGitService, GitService):
             self.token = token
 
         if base_domain and base_domain != 'github.com':
+            # 如果提供了非标准域名，更新API URL（用于GitHub Enterprise）
             self.BASE_URL = f'https://{base_domain}/api/v3'
 
         self.external_auth_id = external_auth_id
@@ -67,11 +80,23 @@ class GitHubService(BaseGitService, GitService):
 
     @property
     def provider(self) -> str:
+        """
+        返回服务提供商标识符。
+        
+        Returns:
+            str: 'github'
+        """
         return ProviderType.GITHUB.value
 
     async def _get_github_headers(self) -> dict:
-        """Retrieve the GH Token from settings store to construct the headers."""
+        """
+        从设置存储中检索GitHub Token来构造请求头。
+        
+        Returns:
+            dict: 包含Authorization和Accept头的字典
+        """
         if not self.token:
+            # 如果没有token，尝试获取最新token
             latest_token = await self.get_latest_token()
             if latest_token:
                 self.token = latest_token
@@ -82,9 +107,24 @@ class GitHubService(BaseGitService, GitService):
         }
 
     def _has_token_expired(self, status_code: int) -> bool:
+        """
+        检查token是否已过期。
+        
+        Args:
+            status_code (int): HTTP状态码
+            
+        Returns:
+            bool: 如果状态码为401则返回True，表示token已过期
+        """
         return status_code == 401
 
     async def get_latest_token(self) -> SecretStr | None:
+        """
+        获取最新的token。
+        
+        Returns:
+            SecretStr | None: 当前token
+        """
         return self.token
 
     async def _make_request(
@@ -93,11 +133,26 @@ class GitHubService(BaseGitService, GitService):
         params: dict | None = None,
         method: RequestMethod = RequestMethod.GET,
     ) -> tuple[Any, dict]:
+        """
+        向GitHub API发起请求。
+        
+        Args:
+            url (str): 请求URL
+            params (dict | None): 请求参数
+            method (RequestMethod): HTTP请求方法
+            
+        Returns:
+            tuple[Any, dict]: 包含响应数据和头信息的元组
+            
+        Raises:
+            HTTPStatusError: HTTP状态错误
+            HTTPError: HTTP通信错误
+        """
         try:
             async with httpx.AsyncClient() as client:
                 github_headers = await self._get_github_headers()
 
-                # Make initial request
+                # 发起初始请求
                 response = await self.execute_request(
                     client=client,
                     url=url,
@@ -106,7 +161,7 @@ class GitHubService(BaseGitService, GitService):
                     method=method,
                 )
 
-                # Handle token refresh if needed
+                # 如果需要刷新且token已过期，则处理token刷新
                 if self.refresh and self._has_token_expired(response.status_code):
                     await self.get_latest_token()
                     github_headers = await self._get_github_headers()
@@ -120,6 +175,7 @@ class GitHubService(BaseGitService, GitService):
 
                 response.raise_for_status()
                 headers = {}
+                # 保存分页链接信息
                 if 'Link' in response.headers:
                     headers['Link'] = response.headers['Link']
 
@@ -131,6 +187,12 @@ class GitHubService(BaseGitService, GitService):
             raise self.handle_http_error(e)
 
     async def get_user(self) -> User:
+        """
+        获取当前认证用户的信息。
+        
+        Returns:
+            User: 用户信息对象
+        """
         url = f'{self.BASE_URL}/user'
         response, _ = await self._make_request(url)
 
@@ -144,7 +206,12 @@ class GitHubService(BaseGitService, GitService):
         )
 
     async def verify_access(self) -> bool:
-        """Verify if the token is valid by making a simple request."""
+        """
+        通过发起简单请求验证token是否有效。
+        
+        Returns:
+            bool: 验证成功返回True
+        """
         url = f'{self.BASE_URL}'
         await self._make_request(url)
         return True
@@ -153,16 +220,16 @@ class GitHubService(BaseGitService, GitService):
         self, url: str, params: dict, max_repos: int, extract_key: str | None = None
     ) -> list[dict]:
         """
-        Fetch repositories with pagination support.
-
+        使用分页支持获取Repository。
+        
         Args:
-            url: The API endpoint URL
-            params: Query parameters for the request
-            max_repos: Maximum number of repositories to fetch
-            extract_key: If provided, extract repositories from this key in the response
-
+            url (str): API端点URL
+            params (dict): 请求的查询参数
+            max_repos (int): 要获取的最大Repository数量
+            extract_key (str | None): 如果提供，从响应中的此键提取Repository
+            
         Returns:
-            List of repository dictionaries
+            list[dict]: Repository字典列表
         """
         repos: list[dict] = []
         page = 1
@@ -171,64 +238,84 @@ class GitHubService(BaseGitService, GitService):
             page_params = {**params, 'page': str(page)}
             response, headers = await self._make_request(url, page_params)
 
-            # Extract repositories from response
+            # 从响应中提取Repository
             page_repos = response.get(extract_key, []) if extract_key else response
 
-            if not page_repos:  # No more repositories
+            if not page_repos:  # 没有更多Repository
                 break
 
             repos.extend(page_repos)
             page += 1
 
-            # Check if we've reached the last page
+            # 检查是否已到达最后一页
             link_header = headers.get('Link', '')
             if 'rel="next"' not in link_header:
                 break
 
-        return repos[:max_repos]  # Trim to max_repos if needed
+        return repos[:max_repos]  # 如果需要，截取到max_repos
 
     def parse_pushed_at_date(self, repo):
+        """
+        解析Repository的推送日期。
+        
+        Args:
+            repo: Repository字典对象
+            
+        Returns:
+            datetime: 解析后的日期时间对象，如果解析失败则返回最小日期
+        """
         ts = repo.get('pushed_at')
         return datetime.strptime(ts, '%Y-%m-%dT%H:%M:%SZ') if ts else datetime.min
 
     async def get_repositories(self, sort: str, app_mode: AppMode) -> list[Repository]:
-        MAX_REPOS = 1000
-        PER_PAGE = 100  # Maximum allowed by GitHub API
+        """
+        获取用户的Repository列表。
+        
+        Args:
+            sort (str): 排序方式
+            app_mode (AppMode): 应用模式
+            
+        Returns:
+            list[Repository]: 用户的Repository列表
+        """
+        MAX_REPOS = 1000        # 最大Repository数量
+        PER_PAGE = 100          # GitHub API允许的每页最大数量
         all_repos: list[dict] = []
 
         if app_mode == AppMode.SAAS:
-            # Get all installation IDs and fetch repos for each one
+            # 获取所有安装ID并为每个安装获取Repository
             installation_ids = await self.get_installation_ids()
 
-            # Iterate through each installation ID
+            # 遍历每个安装ID
             for installation_id in installation_ids:
                 params = {'per_page': str(PER_PAGE)}
                 url = (
                     f'{self.BASE_URL}/user/installations/{installation_id}/repositories'
                 )
 
-                # Fetch repositories for this installation
+                # 获取此安装的Repository
                 installation_repos = await self._fetch_paginated_repos(
                     url, params, MAX_REPOS - len(all_repos), extract_key='repositories'
                 )
 
                 all_repos.extend(installation_repos)
 
-                # If we've already reached MAX_REPOS, no need to check other installations
+                # 如果已经达到MAX_REPOS，不需要检查其他安装
                 if len(all_repos) >= MAX_REPOS:
                     break
 
             if sort == 'pushed':
+                # 对Repository按推送日期排序
                 all_repos.sort(key=self.parse_pushed_at_date, reverse=True)
         else:
-            # Original behavior for non-SaaS mode
+            # 非SaaS模式的原始行为
             params = {'per_page': str(PER_PAGE), 'sort': sort}
             url = f'{self.BASE_URL}/user/repos'
 
-            # Fetch user repositories
+            # 获取用户Repository
             all_repos = await self._fetch_paginated_repos(url, params, MAX_REPOS)
 
-        # Convert to Repository objects
+        # 转换为Repository对象
         return [
             Repository(
                 id=str(repo.get('id')),  # type: ignore[arg-type]
@@ -241,6 +328,12 @@ class GitHubService(BaseGitService, GitService):
         ]
 
     async def get_installation_ids(self) -> list[int]:
+        """
+        获取用户的GitHub App安装ID列表。
+        
+        Returns:
+            list[int]: 安装ID列表
+        """
         url = f'{self.BASE_URL}/user/installations'
         response, _ = await self._make_request(url)
         installations = response.get('installations', [])
@@ -249,8 +342,20 @@ class GitHubService(BaseGitService, GitService):
     async def search_repositories(
         self, query: str, per_page: int, sort: str, order: str
     ) -> list[Repository]:
+        """
+        搜索公开的Repository。
+        
+        Args:
+            query (str): 搜索查询字符串
+            per_page (int): 每页返回的结果数量
+            sort (str): 排序字段
+            order (str): 排序顺序
+            
+        Returns:
+            list[Repository]: 搜索结果Repository列表
+        """
         url = f'{self.BASE_URL}/search/repositories'
-        # Add is:public to the query to ensure we only search for public repositories
+        # 向查询添加is:public以确保只搜索公开Repository
         query_with_visibility = f'{query} is:public'
         params = {
             'q': query_with_visibility,
@@ -278,7 +383,19 @@ class GitHubService(BaseGitService, GitService):
     async def execute_graphql_query(
         self, query: str, variables: dict[str, Any]
     ) -> dict[str, Any]:
-        """Execute a GraphQL query against the GitHub API."""
+        """
+        对GitHub API执行GraphQL查询。
+        
+        Args:
+            query (str): GraphQL查询字符串
+            variables (dict[str, Any]): GraphQL查询变量
+            
+        Returns:
+            dict[str, Any]: GraphQL响应数据
+            
+        Raises:
+            UnknownException: GraphQL查询错误或HTTP错误
+        """
         try:
             async with httpx.AsyncClient() as client:
                 github_headers = await self._get_github_headers()
@@ -303,35 +420,39 @@ class GitHubService(BaseGitService, GitService):
             raise self.handle_http_error(e)
 
     async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks for the authenticated user across all repositories.
+        """
+        获取认证用户在所有Repository中的建议任务。
 
         Returns:
-        - PRs authored by the user.
-        - Issues assigned to the user.
+            list[SuggestedTask]: 建议任务列表，包括：
+            - 用户创建的PR
+            - 分配给用户的Issue
 
-        Note: Queries are split to avoid timeout issues.
+        注意：查询被分割以避免超时问题。
         """
-        # Get user info to use in queries
+        # 获取用户信息用于查询
         user = await self.get_user()
         login = user.login
         tasks: list[SuggestedTask] = []
         variables = {'login': login}
 
         try:
+            # 执行PR查询
             pr_response = await self.execute_graphql_query(
                 suggested_task_pr_graphql_query, variables
             )
             pr_data = pr_response['data']['user']
 
-            # Process pull requests
+            # 处理Pull Request
             for pr in pr_data['pullRequests']['nodes']:
                 repo_name = pr['repository']['nameWithOwner']
 
-                # Start with default task type
+                # 从默认任务类型开始
                 task_type = TaskType.OPEN_PR
 
-                # Check for specific states
+                # 检查特定状态
                 if pr['mergeable'] == 'CONFLICTING':
+                    # 有合并冲突
                     task_type = TaskType.MERGE_CONFLICTS
                 elif (
                     pr['commits']['nodes']
@@ -341,14 +462,16 @@ class GitHubService(BaseGitService, GitService):
                     ]
                     == 'FAILURE'
                 ):
+                    # 状态检查失败
                     task_type = TaskType.FAILING_CHECKS
                 elif any(
                     review['state'] in ['CHANGES_REQUESTED', 'COMMENTED']
                     for review in pr['reviews']['nodes']
                 ):
+                    # 有未解决的评论
                     task_type = TaskType.UNRESOLVED_COMMENTS
 
-                # Only add the task if it's not OPEN_PR
+                # 只有当任务类型不是OPEN_PR时才添加任务
                 if task_type != TaskType.OPEN_PR:
                     tasks.append(
                         SuggestedTask(
@@ -370,13 +493,13 @@ class GitHubService(BaseGitService, GitService):
             )
 
         try:
-            # Execute issue query
+            # 执行Issue查询
             issue_response = await self.execute_graphql_query(
                 suggested_task_issue_graphql_query, variables
             )
             issue_data = issue_response['data']['user']
 
-            # Process issues
+            # 处理Issue
             for issue in issue_data['issues']['nodes']:
                 repo_name = issue['repository']['nameWithOwner']
                 tasks.append(
@@ -405,6 +528,15 @@ class GitHubService(BaseGitService, GitService):
     async def get_repository_details_from_repo_name(
         self, repository: str
     ) -> Repository:
+        """
+        根据Repository名称获取Repository详细信息。
+        
+        Args:
+            repository (str): Repository名称（格式：owner/repo）
+            
+        Returns:
+            Repository: Repository详细信息
+        """
         url = f'{self.BASE_URL}/repos/{repository}'
         repo, _ = await self._make_request(url)
 
@@ -417,26 +549,34 @@ class GitHubService(BaseGitService, GitService):
         )
 
     async def get_branches(self, repository: str) -> list[Branch]:
-        """Get branches for a repository"""
+        """
+        获取Repository的分支列表。
+        
+        Args:
+            repository (str): Repository名称
+            
+        Returns:
+            list[Branch]: 分支列表
+        """
         url = f'{self.BASE_URL}/repos/{repository}/branches'
 
-        # Set maximum branches to fetch (10 pages with 100 per page)
+        # 设置最大分支数量（10页，每页100个）
         MAX_BRANCHES = 1000
         PER_PAGE = 100
 
         all_branches: list[Branch] = []
         page = 1
 
-        # Fetch up to 10 pages of branches
+        # 获取最多10页的分支
         while page <= 10 and len(all_branches) < MAX_BRANCHES:
             params = {'per_page': str(PER_PAGE), 'page': str(page)}
             response, headers = await self._make_request(url, params)
 
-            if not response:  # No more branches
+            if not response:  # 没有更多分支
                 break
 
             for branch_data in response:
-                # Extract the last commit date if available
+                # 如果可用，提取最后提交日期
                 last_push_date = None
                 if branch_data.get('commit') and branch_data['commit'].get('commit'):
                     commit_info = branch_data['commit']['commit']
@@ -455,7 +595,7 @@ class GitHubService(BaseGitService, GitService):
 
             page += 1
 
-            # Check if we've reached the last page
+            # 检查是否已到达最后一页
             link_header = headers.get('Link', '')
             if 'rel="next"' not in link_header:
                 break
@@ -473,29 +613,27 @@ class GitHubService(BaseGitService, GitService):
         labels: list[str] | None = None,
     ) -> str:
         """
-        Creates a PR using user credentials
-
+        使用用户凭据创建PR。
+        
         Args:
-            repo_name: The full name of the repository (owner/repo)
-            source_branch: The name of the branch where your changes are implemented
-            target_branch: The name of the branch you want the changes pulled into
-            title: The title of the pull request (optional, defaults to a generic title)
-            body: The body/description of the pull request (optional)
-            draft: Whether to create the PR as a draft (optional, defaults to False)
-            labels: A list of labels to apply to the pull request (optional)
-
+            repo_name (str): Repository的完整名称（owner/repo）
+            source_branch (str): 实现更改的分支名称
+            target_branch (str): 希望将更改拉入的分支名称
+            title (str): Pull Request的标题
+            body (str | None): Pull Request的正文/描述（可选）
+            draft (bool): 是否创建草稿PR（可选，默认为True）
+            labels (list[str] | None): 应用到Pull Request的标签列表（可选）
+            
         Returns:
-            - PR URL when successful
-            - Error message when unsuccessful
+            str: 成功时返回PR URL，失败时返回错误消息
         """
-
         url = f'{self.BASE_URL}/repos/{repo_name}/pulls'
 
-        # Set default body if none provided
+        # 如果未提供正文，设置默认正文
         if not body:
             body = f'Merging changes from {source_branch} into {target_branch}'
 
-        # Prepare the request payload
+        # 准备请求负载
         payload = {
             'title': title,
             'head': source_branch,
@@ -504,12 +642,12 @@ class GitHubService(BaseGitService, GitService):
             'draft': draft,
         }
 
-        # Make the POST request to create the PR
+        # 发起POST请求创建PR
         response, _ = await self._make_request(
             url=url, params=payload, method=RequestMethod.POST
         )
 
-        # Add labels if provided (PRs are a type of issue in GitHub's API)
+        # 如果提供了标签，添加标签（PR在GitHub API中是Issue的一种类型）
         if labels and len(labels) > 0:
             pr_number = response['number']
             labels_url = f'{self.BASE_URL}/repos/{repo_name}/issues/{pr_number}/labels'
@@ -518,12 +656,14 @@ class GitHubService(BaseGitService, GitService):
                 url=labels_url, params=labels_payload, method=RequestMethod.POST
             )
 
-        # Return the HTML URL of the created PR
+        # 返回创建的PR的HTML URL
         return response['html_url']
 
 
+# 从环境变量获取GitHub服务类配置
 github_service_cls = os.environ.get(
     'OPENHANDS_GITHUB_SERVICE_CLS',
     'openhands.integrations.github.github_service.GitHubService',
 )
+# 使用get_impl获取实际的GitHub服务实现类
 GithubServiceImpl = get_impl(GitHubService, github_service_cls)

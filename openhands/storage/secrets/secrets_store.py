@@ -7,30 +7,46 @@ from openhands.storage.data_models.user_secrets import UserSecrets
 
 
 class SecretsStore(ABC):
-    """Abstract base class for storing user secrets.
+    """用于存储用户密钥的抽象基类。
 
-    This is an extension point in OpenHands that allows applications to customize how
-    user secrets are stored. Applications can substitute their own implementation by:
-    1. Creating a class that inherits from SecretsStore
-    2. Implementing all required methods
-    3. Setting server_config.secret_store_class to the fully qualified name of the class
+    这是OpenHands中的一个扩展点，允许应用程序自定义用户密钥的存储方式。
+    应用程序可以通过以下方式替换自己的实现：
+    1. 创建一个继承自SecretsStore的类
+    2. 实现所有必需的方法
+    3. 将server_config.secret_store_class设置为该类的完全限定名称
 
-    The class is instantiated via get_impl() in openhands.server.shared.py.
+    该类通过openhands.server.shared.py中的get_impl()进行实例化。
 
-    The implementation may or may not support multiple users depending on the environment.
+    根据环境的不同，该实现可能支持也可能不支持多用户。
     """
 
     @abstractmethod
     async def load(self) -> UserSecrets | None:
-        """Load secrets."""
+        """加载密钥。
+        
+        Returns:
+            加载的UserSecrets对象，如果没有找到密钥则返回None
+        """
 
     @abstractmethod
     async def store(self, secrets: UserSecrets) -> None:
-        """Store secrets."""
+        """存储密钥。
+        
+        Args:
+            secrets: 要存储的UserSecrets对象
+        """
 
     @classmethod
     @abstractmethod
     async def get_instance(
         cls, config: OpenHandsConfig, user_id: str | None
     ) -> SecretsStore:
-        """Get a store for the user represented by the token given."""
+        """获取给定用户token所代表的用户的存储实例。
+        
+        Args:
+            config: OpenHands配置对象
+            user_id: 用户的唯一标识符，可能为None
+            
+        Returns:
+            SecretsStore的实例
+        """
