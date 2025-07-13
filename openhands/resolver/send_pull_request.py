@@ -26,19 +26,29 @@ from openhands.utils.async_utils import GENERAL_TIMEOUT, call_async_from_sync
 
 
 def apply_patch(repo_dir: str, patch: str) -> None:
-    """Apply a patch to a repository.
-
+    """将补丁应用到Repository
+    
+    解析git补丁并将其应用到指定的Repository目录。
+    支持文件的创建、删除、修改和重命名操作。
+    
     Args:
-        repo_dir: The directory containing the repository
-        patch: The patch to apply
+        repo_dir (str): 包含Repository的目录路径
+        patch (str): 要应用的补丁内容
+        
+    Note:
+        这个函数会处理各种复杂的git操作，包括：
+        - 文件创建和删除
+        - 文件重命名和移动
+        - 保持原始文件的行结束符格式
     """
+    # 解析补丁内容
     diffs = parse_patch(patch)
     for diff in diffs:
         if not diff.header.new_path:
             logger.warning('Could not determine file to patch')
             continue
 
-        # Remove both "a/" and "b/" prefixes from paths
+        # 从路径中移除"a/"和"b/"前缀
         old_path = (
             os.path.join(
                 repo_dir, diff.header.old_path.removeprefix('a/').removeprefix('b/')
@@ -50,7 +60,7 @@ def apply_patch(repo_dir: str, patch: str) -> None:
             repo_dir, diff.header.new_path.removeprefix('a/').removeprefix('b/')
         )
 
-        # Check if the file is being deleted
+        # 检查文件是否被删除
         if diff.header.new_path == '/dev/null':
             assert old_path is not None
             if os.path.exists(old_path):
@@ -58,41 +68,42 @@ def apply_patch(repo_dir: str, patch: str) -> None:
                 logger.info(f'Deleted file: {old_path}')
             continue
 
-        # Handle file rename
+        # 处理文件重命名
         if old_path and new_path and 'rename from' in patch:
-            # Create parent directory of new path
+            # 创建新路径的父目录
             os.makedirs(os.path.dirname(new_path), exist_ok=True)
             try:
-                # Try to move the file directly
+                # 尝试直接移动文件
                 shutil.move(old_path, new_path)
             except shutil.SameFileError:
-                # If it's the same file (can happen with directory renames), copy first then remove
+                # 如果是同一个文件（可能发生在目录重命名时），先复制再删除
                 shutil.copy2(old_path, new_path)
                 os.remove(old_path)
 
-            # Try to remove empty parent directories
+            # 尝试删除空的父目录
             old_dir = os.path.dirname(old_path)
             while old_dir and old_dir.startswith(repo_dir):
                 try:
                     os.rmdir(old_dir)
                     old_dir = os.path.dirname(old_dir)
                 except OSError:
-                    # Directory not empty or other error, stop trying to remove parents
+                    # 目录不为空或其他错误，停止尝试删除父目录
                     break
             continue
 
+        # 处理文件内容修改
         if old_path:
-            # Open the file in binary mode to detect line endings
+            # 以二进制模式打开文件以检测行结束符
             with open(old_path, 'rb') as f:
                 original_content = f.read()
 
-            # Detect line endings
+            # 检测行结束符类型
             if b'\r\n' in original_content:
                 newline = '\r\n'
             elif b'\n' in original_content:
                 newline = '\n'
             else:
-                newline = None  # Let Python decide
+                newline = None  # 让Python决定
 
             try:
                 with open(old_path, 'r', newline=newline) as f:
@@ -101,6 +112,7 @@ def apply_patch(repo_dir: str, patch: str) -> None:
                 logger.error(f'Error reading file {old_path}: {e}')
                 split_content = []
         else:
+            # 新文件，使用默认的行结束符
             newline = '\n'
             split_content = []
 
@@ -108,12 +120,13 @@ def apply_patch(repo_dir: str, patch: str) -> None:
             logger.warning(f'No changes to apply for {old_path}')
             continue
 
+        # 应用差异到文件内容
         new_content = apply_diff(diff, split_content)
 
-        # Ensure the directory exists before writing the file
+        # 确保目录存在再写入文件
         os.makedirs(os.path.dirname(new_path), exist_ok=True)
 
-        # Write the new content using the detected line endings
+        # 使用检测到的行结束符写入新内容
         with open(new_path, 'w', newline=newline) as f:
             for line in new_content:
                 print(line, file=f)
@@ -124,13 +137,22 @@ def apply_patch(repo_dir: str, patch: str) -> None:
 def initialize_repo(
     output_dir: str, issue_number: int, issue_type: str, base_commit: str | None = None
 ) -> str:
-    """Initialize the repository.
-
+    """初始化Repository
+    
+    从输出目录复制Repository到补丁目录，并可选择地检出到指定提交。
+    
     Args:
-        output_dir: The output directory to write the repository to
-        issue_number: The issue number to fix
-        issue_type: The type of the issue
-        base_commit: The base commit to checkout (if issue_type is pr)
+        output_dir (str): 将Repository写入的输出目录
+        issue_number (int): 要修复的Issue编号
+        issue_type (str): Issue的类型
+        base_commit (str | None, optional): 要检出的基础提交（如果issue_type是pr）
+        
+    Returns:
+        str: 初始化后的Repository目录路径
+        
+    Raises:
+        ValueError: 当源目录不存在时抛出异常
+        RuntimeError: 当检出提交失败时抛出异常
     """
     src_dir = os.path.join(output_dir, 'repo')
     dest_dir = os.path.join(output_dir, 'patches', f'{issue_type}_{issue_number}')
@@ -138,13 +160,15 @@ def initialize_repo(
     if not os.path.exists(src_dir):
         raise ValueError(f'Source directory {src_dir} does not exist.')
 
+    # 如果目标目录存在，先删除
     if os.path.exists(dest_dir):
         shutil.rmtree(dest_dir)
 
+    # 复制Repository
     shutil.copytree(src_dir, dest_dir)
     logger.info(f'Copied repository to {dest_dir}')
 
-    # Checkout the base commit if provided
+    # 如果提供了基础提交，则检出到该提交
     if base_commit:
         result = subprocess.run(
             f'git -C {dest_dir} checkout {base_commit}',
@@ -160,14 +184,19 @@ def initialize_repo(
 
 
 def make_commit(repo_dir: str, issue: Issue, issue_type: str) -> None:
-    """Make a commit with the changes to the repository.
-
+    """使用更改内容向Repository提交
+    
+    配置git用户信息（如果需要），添加所有更改并创建提交。
+    
     Args:
-        repo_dir: The directory containing the repository
-        issue: The issue to fix
-        issue_type: The type of the issue
+        repo_dir (str): 包含Repository的目录
+        issue (Issue): 要修复的Issue
+        issue_type (str): Issue的类型
+        
+    Raises:
+        RuntimeError: 当git操作失败或没有更改可提交时抛出异常
     """
-    # Check if git username is set
+    # 检查git用户名是否已设置
     result = subprocess.run(
         f'git -C {repo_dir} config user.name',
         shell=True,
@@ -176,7 +205,7 @@ def make_commit(repo_dir: str, issue: Issue, issue_type: str) -> None:
     )
 
     if not result.stdout.strip():
-        # If username is not set, configure git
+        # 如果用户名未设置，配置git
         subprocess.run(
             f'git -C {repo_dir} config user.name "openhands" && '
             f'git -C {repo_dir} config user.email "openhands@all-hands.dev" && '
@@ -186,7 +215,7 @@ def make_commit(repo_dir: str, issue: Issue, issue_type: str) -> None:
         )
         logger.info('Git user configured as openhands')
 
-    # Add all changes to the git index
+    # 将所有更改添加到git索引
     result = subprocess.run(
         f'git -C {repo_dir} add .', shell=True, capture_output=True, text=True
     )
@@ -194,7 +223,7 @@ def make_commit(repo_dir: str, issue: Issue, issue_type: str) -> None:
         logger.error(f'Error adding files: {result.stderr}')
         raise RuntimeError('Failed to add files to git')
 
-    # Check the status of the git index
+    # 检查git索引的状态
     status_result = subprocess.run(
         f'git -C {repo_dir} status --porcelain',
         shell=True,
@@ -202,17 +231,17 @@ def make_commit(repo_dir: str, issue: Issue, issue_type: str) -> None:
         text=True,
     )
 
-    # If there are no changes, raise an error
+    # 如果没有更改，抛出错误
     if not status_result.stdout.strip():
         logger.error(
             f'No changes to commit for issue #{issue.number}. Skipping commit.'
         )
         raise RuntimeError('ERROR: Openhands failed to make code changes.')
 
-    # Prepare the commit message
+    # 准备提交消息
     commit_message = f'Fix {issue_type} #{issue.number}: {issue.title}'
 
-    # Commit the changes
+    # 提交更改
     result = subprocess.run(
         ['git', '-C', repo_dir, 'commit', '-m', commit_message],
         capture_output=True,
@@ -236,26 +265,36 @@ def send_pull_request(
     pr_title: str | None = None,
     base_domain: str | None = None,
 ) -> str:
-    """Send a pull request to a GitHub, GitLab, or Bitbucket repository.
-
+    """向GitHub、GitLab或Bitbucket Repository发送Pull Request
+    
+    创建新分支，推送更改，并创建Pull Request。
+    支持多种PR类型和各种可选配置。
+    
     Args:
-        issue: The issue to send the pull request for
-        token: The token to use for authentication
-        username: The username, if provided
-        platform: The platform of the repository.
-        patch_dir: The directory containing the patches to apply
-        pr_type: The type: branch (no PR created), draft or ready (regular PR created)
-        fork_owner: The owner of the fork to push changes to (if different from the original repo owner)
-        additional_message: The additional messages to post as a comment on the PR in json list format
-        target_branch: The target branch to create the pull request against (defaults to repository default branch)
-        reviewer: The username of the reviewer to assign
-        pr_title: Custom title for the pull request (optional)
-        base_domain: The base domain for the git server (defaults to "github.com" for GitHub, "gitlab.com" for GitLab, and "bitbucket.org" for Bitbucket)
+        issue (Issue): 要发送Pull Request的Issue
+        token (str): 用于认证的token
+        username (str | None): 用户名（如果提供）
+        platform (ProviderType): Repository的平台类型
+        patch_dir (str): 包含要应用的补丁的目录
+        pr_type (str): 类型：branch（不创建PR）、draft或ready（创建常规PR）
+        fork_owner (str | None, optional): 推送更改的fork所有者（如果与原始Repository所有者不同）
+        additional_message (str | None, optional): 作为PR评论发布的附加消息（json列表格式）
+        target_branch (str | None, optional): 创建Pull Request的目标分支（默认为Repository默认分支）
+        reviewer (str | None, optional): 要分配的审查者用户名
+        pr_title (str | None, optional): Pull Request的自定义标题
+        base_domain (str | None, optional): git服务器的基础域名
+        
+    Returns:
+        str: 创建的Pull Request或分支的URL
+        
+    Raises:
+        ValueError: 当PR类型无效或平台不支持时抛出异常
+        RuntimeError: 当git操作失败时抛出异常
     """
     if pr_type not in ['branch', 'draft', 'ready']:
         raise ValueError(f'Invalid pr_type: {pr_type}')
 
-    # Determine default base_domain based on platform
+    # 根据平台确定默认base_domain
     if base_domain is None:
         if platform == ProviderType.GITHUB:
             base_domain = 'github.com'
@@ -264,7 +303,7 @@ def send_pull_request(
         else:  # platform == ProviderType.BITBUCKET
             base_domain = 'bitbucket.org'
 
-    # Create the appropriate handler based on platform
+    # 根据平台创建相应的处理器
     handler = None
     if platform == ProviderType.GITHUB:
         handler = ServiceContextIssue(
@@ -286,13 +325,13 @@ def send_pull_request(
     else:
         raise ValueError(f'Unsupported platform: {platform}')
 
-    # Create a new branch with a unique name
+    # 创建具有唯一名称的新分支
     base_branch_name = f'openhands-fix-issue-{issue.number}'
     branch_name = handler.get_branch_name(
         base_branch_name=base_branch_name,
     )
 
-    # Get the default branch or use specified target branch
+    # 获取默认分支或使用指定的目标分支
     logger.info('Getting base branch...')
     if target_branch:
         base_branch = target_branch
@@ -303,7 +342,7 @@ def send_pull_request(
         base_branch = handler.get_default_branch_name()
     logger.info(f'Base branch: {base_branch}')
 
-    # Create and checkout the new branch
+    # 创建并检出新分支
     logger.info('Creating new branch...')
     result = subprocess.run(
         ['git', '-C', patch_dir, 'checkout', '-b', branch_name],
@@ -316,11 +355,12 @@ def send_pull_request(
             f'Failed to create a new branch {branch_name} in {patch_dir}:'
         )
 
-    # Determine the repository to push to (original or fork)
+    # 确定要推送到的Repository（原始或fork）
     push_owner = fork_owner if fork_owner else issue.owner
 
     handler._strategy.set_owner(push_owner)
 
+    # 推送更改
     logger.info('Pushing changes...')
     push_url = handler.get_clone_url()
     result = subprocess.run(
@@ -332,7 +372,7 @@ def send_pull_request(
         logger.error(f'Error pushing changes: {result.stderr}')
         raise RuntimeError('Failed to push changes to the remote repository')
 
-    # Prepare the PR data: title and body
+    # 准备PR数据：标题和内容
     final_pr_title = (
         pr_title if pr_title else f'Fix issue #{issue.number}: {issue.title}'
     )
@@ -341,18 +381,20 @@ def send_pull_request(
         pr_body += f'\n\n{additional_message}'
     pr_body += '\n\nAutomatic fix generated by [OpenHands](https://github.com/All-Hands-AI/OpenHands/) 🙌'
 
-    # For cross repo pull request, we need to send head parameter like fork_owner:branch as per git documentation here : https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28#create-a-pull-request
-    # head parameter usage : The name of the branch where your changes are implemented. For cross-repository pull requests in the same network, namespace head with a user like this: username:branch.
+    # 对于跨Repository的Pull Request，我们需要发送head参数，格式为fork_owner:branch
+    # 根据git文档：https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28#create-a-pull-request
+    # head参数用法：实现更改的分支名称。对于同一网络中的跨Repository Pull Request，
+    # 使用用户名命名空间头部，如：username:branch。
     if fork_owner and platform == ProviderType.GITHUB:
         head_branch = f'{fork_owner}:{branch_name}'
     else:
         head_branch = branch_name
-    # If we are not sending a PR, we can finish early and return the
-    # URL for the user to open a PR manually
+        
+    # 如果我们不发送PR，可以提前结束并返回URL供用户手动打开PR
     if pr_type == 'branch':
         url = handler.get_compare_url(branch_name)
     else:
-        # Prepare the PR for the GitHub API
+        # 为GitHub API准备PR数据
         data = {
             'title': final_pr_title,
             ('body' if platform == ProviderType.GITHUB else 'description'): pr_body,
@@ -365,10 +407,11 @@ def send_pull_request(
             'draft': pr_type == 'draft',
         }
 
+        # 创建Pull Request
         pr_data = handler.create_pull_request(data)
         url = pr_data['html_url']
 
-        # Request review if a reviewer was specified
+        # 如果指定了审查者且不是分支类型，请求审查
         if reviewer and pr_type != 'branch':
             number = pr_data['number']
             handler.request_reviewers(reviewer, number)
@@ -391,25 +434,32 @@ def update_existing_pull_request(
     additional_message: str | None = None,
     base_domain: str | None = None,
 ) -> str:
-    """Update an existing pull request with the new patches.
-
+    """使用新补丁更新现有的Pull Request
+    
+    推送更改到现有的PR分支，并可选择地添加评论和回复评论线程。
+    
     Args:
-        issue: The issue to update.
-        token: The  token to use for authentication.
-        username: The username to use for authentication.
-        platform: The platform of the repository.
-        patch_dir: The directory containing the patches to apply.
-        llm_config: The LLM configuration to use for summarizing changes.
-        comment_message: The main message to post as a comment on the PR.
-        additional_message: The additional messages to post as a comment on the PR in json list format.
-        base_domain: The base domain for the git server (defaults to "github.com" for GitHub and "gitlab.com" for GitLab)
+        issue (Issue): 要更新的Issue
+        token (str): 用于认证的token
+        username (str | None): 用于认证的用户名
+        platform (ProviderType): Repository的平台类型
+        patch_dir (str): 包含要应用的补丁的目录
+        llm_config (LLMConfig): 用于总结更改的LLM配置
+        comment_message (str | None, optional): 作为PR评论发布的主要消息
+        additional_message (str | None, optional): 作为PR评论发布的附加消息（json列表格式）
+        base_domain (str | None, optional): git服务器的基础域名
+        
+    Returns:
+        str: 更新的Pull Request的URL
+        
+    Raises:
+        RuntimeError: 当推送更改失败时抛出异常
     """
-    # Set up headers and base URL for GitHub or GitLab API
-
-    # Determine default base_domain based on platform
+    # 根据平台确定默认base_domain
     if base_domain is None:
         base_domain = 'github.com' if platform == ProviderType.GITHUB else 'gitlab.com'
 
+    # 创建处理器
     handler = None
     if platform == ProviderType.GITHUB:
         handler = ServiceContextIssue(
@@ -424,14 +474,14 @@ def update_existing_pull_request(
 
     branch_name = issue.head_branch
 
-    # Prepare the push command
+    # 准备推送命令
     push_command = (
         f'git -C {patch_dir} push '
         f'{handler.get_authorize_url()}'
         f'{issue.owner}/{issue.repo}.git {branch_name}'
     )
 
-    # Push the changes to the existing branch
+    # 将更改推送到现有分支
     result = subprocess.run(push_command, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
         logger.error(f'Error pushing changes: {result.stderr}')
@@ -440,7 +490,7 @@ def update_existing_pull_request(
     pr_url = handler.get_pull_url(issue.number)
     logger.info(f'Updated pull request {pr_url} with new patches.')
 
-    # Generate a summary of all comment success indicators for PR message
+    # 为PR消息生成所有评论成功指示器的摘要
     if not comment_message and additional_message:
         try:
             explanations = json.loads(additional_message)
@@ -451,7 +501,7 @@ def update_existing_pull_request(
                 for explanation in explanations:
                     comment_message += f'- {explanation}\n'
 
-                # Summarize with LLM if provided
+                # 如果提供了LLM，使用LLM进行总结
                 if llm_config is not None:
                     llm = LLM(llm_config)
                     with open(
@@ -471,11 +521,11 @@ def update_existing_pull_request(
         except (json.JSONDecodeError, TypeError):
             comment_message = f'A new OpenHands update is available, but failed to parse or summarize the changes:\n{additional_message}'
 
-    # Post a comment on the PR
+    # 在PR上发布评论
     if comment_message:
         handler.send_comment_msg(issue.number, comment_message)
 
-    # Reply to each unresolved comment thread
+    # 回复每个未解决的评论线程
     if additional_message and issue.thread_ids:
         try:
             explanations = json.loads(additional_message)
@@ -504,9 +554,33 @@ def process_single_issue(
     pr_title: str | None = None,
     base_domain: str | None = None,
 ) -> None:
-    # Determine default base_domain based on platform
+    """处理单个Issue并发送Pull Request
+    
+    根据Issue类型（issue或pr）和解决状态，决定是创建新的PR还是更新现有的PR。
+    
+    Args:
+        output_dir (str): 输出目录
+        resolver_output (ResolverOutput): Resolver的输出结果
+        token (str): 认证token
+        username (str): 用户名
+        platform (ProviderType): 平台类型
+        pr_type (str): PR类型
+        llm_config (LLMConfig): LLM配置
+        fork_owner (str | None): Fork所有者
+        send_on_failure (bool): 是否在失败时也发送PR
+        target_branch (str | None, optional): 目标分支
+        reviewer (str | None, optional): 审查者
+        pr_title (str | None, optional): PR标题
+        base_domain (str | None, optional): 基础域名
+        
+    Raises:
+        ValueError: 当Issue类型无效时抛出异常
+    """
+    # 根据平台确定默认base_domain
     if base_domain is None:
         base_domain = 'github.com' if platform == ProviderType.GITHUB else 'gitlab.com'
+        
+    # 如果Issue没有成功解决且不发送失败的结果，则跳过PR创建
     if not resolver_output.success and not send_on_failure:
         logger.info(
             f'Issue {resolver_output.issue.number} was not successfully resolved. Skipping PR creation.'
@@ -515,6 +589,7 @@ def process_single_issue(
 
     issue_type = resolver_output.issue_type
 
+    # 根据Issue类型初始化Repository
     if issue_type == 'issue':
         patched_repo_dir = initialize_repo(
             output_dir,
@@ -532,10 +607,13 @@ def process_single_issue(
     else:
         raise ValueError(f'Invalid issue type: {issue_type}')
 
+    # 应用补丁
     apply_patch(patched_repo_dir, resolver_output.git_patch)
 
+    # 创建提交
     make_commit(patched_repo_dir, resolver_output.issue, issue_type)
 
+    # 根据Issue类型决定是更新现有PR还是创建新PR
     if issue_type == 'pr':
         update_existing_pull_request(
             issue=resolver_output.issue,
@@ -565,15 +643,28 @@ def process_single_issue(
 
 
 def main() -> None:
+    """主函数：解析命令行参数并处理Pull Request发送流程
+    
+    这个函数是程序的入口点，负责：
+    1. 解析所有命令行参数
+    2. 验证认证信息
+    3. 加载Resolver输出结果
+    4. 处理单个Issue的PR发送
+    """
+    # 创建命令行参数解析器
     parser = argparse.ArgumentParser(
         description='Send a pull request to Github or Gitlab.'
     )
+    
+    # Repository相关参数
     parser.add_argument(
         '--selected-repo',
         type=str,
         default=None,
         help='repository to send pull request in form of `owner/repo`.',
     )
+    
+    # 认证相关参数
     parser.add_argument(
         '--token',
         type=str,
@@ -586,6 +677,8 @@ def main() -> None:
         default=None,
         help='username to access the repository.',
     )
+    
+    # 输出和Issue参数
     parser.add_argument(
         '--output-dir',
         type=str,
@@ -605,6 +698,8 @@ def main() -> None:
         required=True,
         help="Issue number to send the pull request for, or 'all_successful' to process all successful issues.",
     )
+    
+    # Fork和发送选项
     parser.add_argument(
         '--fork-owner',
         type=str,
@@ -616,6 +711,8 @@ def main() -> None:
         action='store_true',
         help='Send a pull request even if the issue was not successfully resolved.',
     )
+    
+    # LLM相关参数
     parser.add_argument(
         '--llm-model',
         type=str,
@@ -634,6 +731,8 @@ def main() -> None:
         default=None,
         help='Base URL for the LLM model.',
     )
+    
+    # PR配置参数
     parser.add_argument(
         '--target-branch',
         type=str,
@@ -658,15 +757,20 @@ def main() -> None:
         default=None,
         help='Base domain for the git server (defaults to "github.com" for GitHub and "gitlab.com" for GitLab)',
     )
+    
+    # 解析命令行参数
     my_args = parser.parse_args()
 
+    # 获取认证token，优先级：命令行参数 > 环境变量
     token = my_args.token or os.getenv('GITHUB_TOKEN') or os.getenv('GITLAB_TOKEN')
     if not token:
         raise ValueError(
             'token is not set, set via --token or GITHUB_TOKEN or GITLAB_TOKEN environment variable.'
         )
+    # 获取用户名
     username = my_args.username if my_args.username else os.getenv('GIT_USERNAME')
 
+    # 识别平台类型
     platform = call_async_from_sync(
         identify_token,
         GENERAL_TIMEOUT,
@@ -674,6 +778,7 @@ def main() -> None:
         my_args.base_domain,
     )
 
+    # 配置LLM
     api_key = my_args.llm_api_key or os.environ['LLM_API_KEY']
     llm_config = LLMConfig(
         model=my_args.llm_model or os.environ['LLM_MODEL'],
@@ -681,16 +786,24 @@ def main() -> None:
         base_url=my_args.llm_base_url or os.environ.get('LLM_BASE_URL', None),
     )
 
+    # 验证输出目录存在
     if not os.path.exists(my_args.output_dir):
         raise ValueError(f'Output directory {my_args.output_dir} does not exist.')
 
+    # 验证并解析Issue编号
     if not my_args.issue_number.isdigit():
         raise ValueError(f'Issue number {my_args.issue_number} is not a number.')
     issue_number = int(my_args.issue_number)
+    
+    # 加载Resolver输出结果
     output_path = os.path.join(my_args.output_dir, 'output.jsonl')
     resolver_output = load_single_resolver_output(output_path, issue_number)
+    
+    # 验证用户名
     if not username:
         raise ValueError('username is required.')
+        
+    # 处理单个Issue
     process_single_issue(
         my_args.output_dir,
         resolver_output,
@@ -709,4 +822,5 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    # 当作为主程序运行时，调用main函数
     main()

@@ -13,6 +13,24 @@ from openhands.resolver.utils import extract_issue_references
 
 
 class GitlabIssueHandler(IssueHandlerInterface):
+    """
+    GitLab Issue处理器类
+    
+    该类实现了IssueHandlerInterface接口，用于处理GitLab平台的Issue相关操作，
+    包括获取Issue信息、创建Merge Request、发送评论等功能。支持GitLab.com和GitLab Enterprise。
+    
+    Attributes:
+        owner (str): Repository的拥有者
+        repo (str): Repository名称
+        token (str): GitLab个人访问token
+        username (str | None): 可选的GitLab用户名
+        base_domain (str): GitLab域名，默认为'gitlab.com'，支持GitLab Enterprise
+        base_url (str): API基础URL
+        download_url (str): 下载URL
+        clone_url (str): 克隆URL
+        headers (dict[str, str]): HTTP请求头
+    """
+    
     def __init__(
         self,
         owner: str,
@@ -21,110 +39,188 @@ class GitlabIssueHandler(IssueHandlerInterface):
         username: str | None = None,
         base_domain: str = 'gitlab.com',
     ):
-        """Initialize a GitLab issue handler.
-
+        """
+        初始化GitLab Issue处理器
+        
         Args:
-            owner: The owner of the repository
-            repo: The name of the repository
-            token: The GitLab personal access token
-            username: Optional GitLab username
-            base_domain: The domain for GitLab Enterprise (default: "gitlab.com")
+            owner: Repository的拥有者
+            repo: Repository名称
+            token: GitLab个人访问token
+            username: 可选的GitLab用户名
+            base_domain: GitLab域名，用于支持GitLab Enterprise（默认值: "gitlab.com"）
         """
         self.owner = owner
         self.repo = repo
         self.token = token
         self.username = username
         self.base_domain = base_domain
+        # 初始化各种URL和请求头
         self.base_url = self.get_base_url()
         self.download_url = self.get_download_url()
         self.clone_url = self.get_clone_url()
         self.headers = self.get_headers()
 
     def set_owner(self, owner: str) -> None:
+        """
+        设置Repository的拥有者
+        
+        Args:
+            owner: 新的拥有者名称
+        """
         self.owner = owner
 
     def get_headers(self) -> dict[str, str]:
+        """
+        获取GitLab API的HTTP请求头
+        
+        使用Bearer token认证方式。
+        
+        Returns:
+            包含认证信息的HTTP请求头字典
+        """
         return {
             'Authorization': f'Bearer {self.token}',
             'Accept': 'application/json',
         }
 
     def get_base_url(self) -> str:
+        """
+        获取GitLab API的基础URL
+        
+        使用URL编码确保项目路径的安全性。
+        
+        Returns:
+            API基础URL字符串
+        """
+        # 对项目路径进行URL编码以确保安全性
         project_path = quote(f'{self.owner}/{self.repo}', safe='')
         return f'https://{self.base_domain}/api/v4/projects/{project_path}'
 
     def get_authorize_url(self) -> str:
+        """
+        获取带认证信息的授权URL
+        
+        Returns:
+            包含用户名和token的授权URL
+        """
         return f'https://{self.username}:{self.token}@{self.base_domain}/'
 
     def get_branch_url(self, branch_name: str) -> str:
+        """
+        获取分支的API URL
+        
+        Args:
+            branch_name: 分支名称
+        
+        Returns:
+            分支的API URL
+        """
         return self.get_base_url() + f'/repository/branches/{branch_name}'
 
     def get_download_url(self) -> str:
+        """
+        获取Issues的下载URL
+        
+        Returns:
+            Issues API的URL
+        """
         return f'{self.base_url}/issues'
 
     def get_clone_url(self) -> str:
+        """
+        获取带认证信息的Repository克隆URL
+        
+        根据是否提供了username选择不同的认证格式。
+        
+        Returns:
+            包含认证信息的Git克隆URL
+        """
+        # 如果提供了用户名，使用用户名:token格式，否则只使用token
         username_and_token = self.token
         if self.username:
             username_and_token = f'{self.username}:{self.token}'
         return f'https://{username_and_token}@{self.base_domain}/{self.owner}/{self.repo}.git'
 
     def get_graphql_url(self) -> str:
+        """
+        获取GraphQL API的URL
+        
+        Returns:
+            GraphQL API的URL字符串
+        """
         return f'https://{self.base_domain}/api/graphql'
 
     def get_compare_url(self, branch_name: str) -> str:
+        """
+        获取分支比较的Web URL
+        
+        Args:
+            branch_name: 要比较的分支名称
+        
+        Returns:
+            分支比较页面的URL（与默认分支比较）
+        """
         return f'https://{self.base_domain}/{self.owner}/{self.repo}/-/compare/{self.get_default_branch_name()}...{branch_name}'
 
     def get_converted_issues(
         self, issue_numbers: list[int] | None = None, comment_id: int | None = None
     ) -> list[Issue]:
-        """Download issues from Gitlab.
-
-        Args:
-            issue_numbers: The numbers of the issues to download
-            comment_id: The ID of a single comment, if provided, otherwise all comments
-
-        Returns:
-            List of Gitlab issues.
         """
-
+        从GitLab下载并转换Issues
+        
+        Args:
+            issue_numbers: 要下载的Issue编号列表
+            comment_id: 单个评论的ID，如果提供则只获取该评论，否则获取所有评论
+        
+        Returns:
+            GitLab Issues列表
+        
+        Raises:
+            ValueError: 当未指定issue_numbers时抛出异常
+        """
         if not issue_numbers:
             raise ValueError('Unspecified issue number')
 
+        # 下载所有Issues
         all_issues = self.download_issues()
         logger.info(f'Limiting resolving to issues {issue_numbers}.')
+        # 过滤出指定IID的Issues
         all_issues = [
             issue
             for issue in all_issues
-            # if issue['iid'] in issue_numbers and issue['merge_requests_count'] == 0
+            # 注释：在GitLab中使用iid而不是id，原本还会检查merge_requests_count == 0以排除Merge Requests
             if issue['iid'] in issue_numbers  # TODO for testing
         ]
 
+        # 如果只查询一个Issue但没找到，抛出异常
         if len(issue_numbers) == 1 and not all_issues:
             raise ValueError(f'Issue {issue_numbers[0]} not found')
 
         converted_issues = []
         for issue in all_issues:
+            # 检查必需字段（iid和title）
             if any([issue.get(key) is None for key in ['iid', 'title']]):
                 logger.warning(f'Skipping issue {issue} as it is missing iid or title.')
                 continue
 
-            # Handle empty body by using empty string
+            # 处理空的description字段，使用空字符串替代None
             if issue.get('description') is None:
                 issue['description'] = ''
 
-            # Get issue thread comments
+            # 获取Issue的线程评论
             thread_comments = self.get_issue_comments(
                 issue['iid'], comment_id=comment_id
             )
-            # Convert empty lists to None for optional fields
+            
+            # 为常规Issues初始化可选字段，review_comments对于常规Issue为None
             issue_details = Issue(
                 owner=self.owner,
                 repo=self.repo,
-                number=issue['iid'],
+                number=issue['iid'],  # GitLab使用iid作为Issue编号
                 title=issue['title'],
-                body=issue['description'],
+                body=issue['description'],  # GitLab使用description作为Issue内容
                 thread_comments=thread_comments,
-                review_comments=None,  # Initialize review comments as None for regular issues
+                review_comments=None,  # 常规Issues的review_comments初始化为None
             )
 
             converted_issues.append(issue_details)
@@ -132,6 +228,18 @@ class GitlabIssueHandler(IssueHandlerInterface):
         return converted_issues
 
     def download_issues(self) -> list[Any]:
+        """
+        下载Repository中的所有开放状态的Issues
+        
+        使用分页方式获取所有Issues，每页最多100个。
+        
+        Returns:
+            包含所有Issues的列表
+        
+        Raises:
+            ValueError: 当API返回的数据格式不正确时抛出异常
+        """
+        # 设置分页参数：只获取开放状态的Issues，范围为所有，每页100个，从第1页开始
         params: dict[str, int | str] = {
             'state': 'opened',
             'scope': 'all',
@@ -140,14 +248,17 @@ class GitlabIssueHandler(IssueHandlerInterface):
         }
         all_issues = []
 
+        # 循环获取所有页面的Issues
         while True:
             response = httpx.get(self.download_url, headers=self.headers, params=params)
             response.raise_for_status()
             issues = response.json()
 
+            # 如果当前页没有Issues，结束循环
             if not issues:
                 break
 
+            # 验证返回数据的格式
             if not isinstance(issues, list) or any(
                 [not isinstance(issue, dict) for issue in issues]
             ):
@@ -155,7 +266,9 @@ class GitlabIssueHandler(IssueHandlerInterface):
                     'Expected list of dictionaries from Service Gitlab API.'
                 )
 
+            # 将当前页的Issues添加到总列表中
             all_issues.extend(issues)
+            # 准备获取下一页
             assert isinstance(params['page'], int)
             params['page'] += 1
 
@@ -164,19 +277,32 @@ class GitlabIssueHandler(IssueHandlerInterface):
     def get_issue_comments(
         self, issue_number: int, comment_id: int | None = None
     ) -> list[str] | None:
-        """Download comments for a specific issue from Gitlab."""
+        """
+        从GitLab下载指定Issue的评论（notes）
+        
+        Args:
+            issue_number: Issue编号（iid）
+            comment_id: 可选的特定评论ID，如果提供则只返回该评论
+        
+        Returns:
+            评论内容列表，如果没有评论则返回None
+        """
+        # 构建notes API的URL（GitLab中称评论为notes）
         url = f'{self.download_url}/{issue_number}/notes'
         params = {'per_page': 100, 'page': 1}
         all_comments = []
 
+        # 分页获取所有评论
         while True:
             response = httpx.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             comments = response.json()
 
+            # 如果当前页没有评论，结束循环
             if not comments:
                 break
 
+            # 如果指定了comment_id，只查找匹配的评论
             if comment_id:
                 matching_comment = next(
                     (
@@ -189,41 +315,80 @@ class GitlabIssueHandler(IssueHandlerInterface):
                 if matching_comment:
                     return [matching_comment]
             else:
+                # 收集所有评论的内容
                 all_comments.extend([comment['body'] for comment in comments])
 
+            # 获取下一页
             params['page'] += 1
 
+        # 如果有评论则返回列表，否则返回None
         return all_comments if all_comments else None
 
     def branch_exists(self, branch_name: str) -> bool:
+        """
+        检查指定分支是否存在
+        
+        通过发送HTTP请求到分支API来检查分支是否存在。
+        
+        Args:
+            branch_name: 要检查的分支名称
+        
+        Returns:
+            如果分支存在返回True，否则返回False
+        """
         logger.info(f'Checking if branch {branch_name} exists...')
         response = httpx.get(
             f'{self.base_url}/repository/branches/{branch_name}', headers=self.headers
         )
+        # 状态码200表示分支存在
         exists = response.status_code == 200
         logger.info(f'Branch {branch_name} exists: {exists}')
         return exists
 
     def get_branch_name(self, base_branch_name: str) -> str:
+        """
+        生成一个不冲突的分支名称
+        
+        如果指定的分支名已存在，会在后面添加数字后缀直到找到可用的名称。
+        
+        Args:
+            base_branch_name: 基础分支名称
+        
+        Returns:
+            可用的唯一分支名称
+        """
         branch_name = base_branch_name
         attempt = 1
+        # 循环检查分支名，如果存在则添加尝试次数后缀
         while self.branch_exists(branch_name):
             attempt += 1
             branch_name = f'{base_branch_name}-try{attempt}'
         return branch_name
 
     def reply_to_comment(self, pr_number: int, comment_id: str, reply: str) -> None:
+        """
+        回复Merge Request中的评论
+        
+        Args:
+            pr_number: Merge Request编号
+            comment_id: 要回复的讨论ID
+            reply: 回复内容
+        """
+        # 首先获取讨论信息
         response = httpx.get(
             f'{self.base_url}/merge_requests/{pr_number}/discussions/{comment_id.split("/")[-1]}',
             headers=self.headers,
         )
         response.raise_for_status()
         discussions = response.json()
+        
+        # 如果讨论中有notes，回复最后一个note
         if len(discussions.get('notes', [])) > 0:
             data = {
                 'body': f'Openhands fix success summary\n\n\n{reply}',
                 'note_id': discussions.get('notes', [])[-1]['id'],
             }
+            # 创建回复note
             response = httpx.post(
                 f'{self.base_url}/merge_requests/{pr_number}/discussions/{comment_id.split("/")[-1]}/notes',
                 headers=self.headers,
@@ -232,20 +397,53 @@ class GitlabIssueHandler(IssueHandlerInterface):
             response.raise_for_status()
 
     def get_pull_url(self, pr_number: int) -> str:
+        """
+        获取Merge Request的Web URL
+        
+        Args:
+            pr_number: Merge Request编号
+        
+        Returns:
+            Merge Request的Web页面URL
+        """
         return f'https://{self.base_domain}/{self.owner}/{self.repo}/-/merge_requests/{pr_number}'
 
     def get_default_branch_name(self) -> str:
+        """
+        获取Repository的默认分支名称
+        
+        通过API查询项目信息来获取默认分支名称。
+        
+        Returns:
+            默认分支名称字符串
+        """
         response = httpx.get(f'{self.base_url}', headers=self.headers)
         response.raise_for_status()
         data = response.json()
         return str(data['default_branch'])
 
     def create_pull_request(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        创建Merge Request
+        
+        Args:
+            data: 包含Merge Request信息的字典
+        
+        Returns:
+            创建的Merge Request信息字典，标准化了字段名以保持兼容性
+        
+        Raises:
+            RuntimeError: 当由于权限不足导致创建失败时抛出异常
+        """
         if data is None:
             data = {}
+            
+        # 发送POST请求创建Merge Request
         response = httpx.post(
             f'{self.base_url}/merge_requests', headers=self.headers, json=data
         )
+        
+        # 特殊处理权限不足的情况
         if response.status_code == 403:
             raise RuntimeError(
                 'Failed to create pull request due to missing permissions. '
@@ -253,21 +451,33 @@ class GitlabIssueHandler(IssueHandlerInterface):
             )
         response.raise_for_status()
         pr_data = response.json()
+        
+        # 标准化字段名以保持与其他平台的兼容性
         if 'web_url' in pr_data:
-            pr_data['html_url'] = pr_data['web_url']
+            pr_data['html_url'] = pr_data['web_url']  # 将GitLab的web_url映射为html_url
 
         if 'iid' in pr_data:
-            pr_data['number'] = pr_data['iid']
+            pr_data['number'] = pr_data['iid']  # 将GitLab的iid映射为number
 
         return dict(pr_data)
 
     def request_reviewers(self, reviewer: str, pr_number: int) -> None:
+        """
+        为Merge Request请求审查者
+        
+        Args:
+            reviewer: 审查者的用户名
+            pr_number: Merge Request编号
+        """
+        # 首先根据用户名查找用户ID
         response = httpx.get(
             f'https://{self.base_domain}/api/v4/users?username={reviewer}',
             headers=self.headers,
         )
         response.raise_for_status()
         user_data = response.json()
+        
+        # 如果找到用户，将其设置为审查者
         if len(user_data) > 0:
             review_data = {'reviewer_ids': [user_data[0]['id']]}
             review_response = httpx.put(
@@ -275,24 +485,30 @@ class GitlabIssueHandler(IssueHandlerInterface):
                 headers=self.headers,
                 json=review_data,
             )
+            # 如果请求失败，记录警告日志
             if review_response.status_code != 200:
                 logger.warning(
                     f'Failed to request review from {reviewer}: {review_response.text}'
                 )
 
     def send_comment_msg(self, issue_number: int, msg: str) -> None:
-        """Send a comment message to a GitHub issue or pull request.
-
-        Args:
-            issue_number: The issue or pull request number
-            msg: The message content to post as a comment
         """
-        # Post a comment on the PR
+        向GitHub Issue或Pull Request发送评论消息
+        
+        Args:
+            issue_number: Issue或Pull Request编号
+            msg: 要发布为评论的消息内容
+        """
+        # 构建notes API URL
         comment_url = f'{self.base_url}/issues/{issue_number}/notes'
         comment_data = {'body': msg}
+        
+        # 发送POST请求创建note
         comment_response = httpx.post(
             comment_url, headers=self.headers, json=comment_data
         )
+        
+        # 检查响应状态并记录相应日志
         if comment_response.status_code != 201:
             logger.error(
                 f'Failed to post comment: {comment_response.status_code} {comment_response.text}'
@@ -309,10 +525,36 @@ class GitlabIssueHandler(IssueHandlerInterface):
         review_threads: list[ReviewThread],
         thread_comments: list[str] | None,
     ) -> list[str]:
+        """
+        从外部Issue引用中获取上下文信息
+        
+        注意：GitLab实现中此方法为空实现，返回空列表。
+        
+        Args:
+            closing_issues: 关闭的Issue列表
+            closing_issue_numbers: 关闭的Issue编号列表
+            issue_body: Issue主体内容
+            review_comments: 审查评论列表
+            review_threads: 审查线程列表
+            thread_comments: 线程评论列表
+        
+        Returns:
+            空列表（GitLab基础实现中未处理外部引用）
+        """
         return []
 
 
 class GitlabPRHandler(GitlabIssueHandler):
+    """
+    GitLab Merge Request处理器
+    
+    该类继承自GitlabIssueHandler，专门用于处理GitLab Merge Request相关操作，
+    包括下载MR Metadata、获取审查评论和讨论线程等。
+    
+    Attributes:
+        继承父类的所有属性，并重写download_url为Merge Request专用URL
+    """
+    
     def __init__(
         self,
         owner: str,
@@ -321,39 +563,43 @@ class GitlabPRHandler(GitlabIssueHandler):
         username: str | None = None,
         base_domain: str = 'gitlab.com',
     ):
-        """Initialize a GitLab PR handler.
-
+        """
+        初始化GitLab Merge Request处理器
+        
         Args:
-            owner: The owner of the repository
-            repo: The name of the repository
-            token: The GitLab personal access token
-            username: Optional GitLab username
-            base_domain: The domain for GitLab Enterprise (default: "gitlab.com")
+            owner: Repository的拥有者
+            repo: Repository名称
+            token: GitLab个人访问token
+            username: 可选的GitLab用户名
+            base_domain: GitLab域名，用于支持GitLab Enterprise（默认值: "gitlab.com"）
         """
         super().__init__(owner, repo, token, username, base_domain)
+        # 设置Merge Request专用的下载URL
         self.download_url = f'{self.base_url}/merge_requests'
 
     def download_pr_metadata(
         self, pull_number: int, comment_id: int | None = None
     ) -> tuple[list[str], list[int], list[str] | None, list[ReviewThread], list[str]]:
-        """Run a GraphQL query against the Gitlab API for information.
-
-        Retrieves information about:
-            1. unresolved review comments
-            2. referenced issues the pull request would close
-
-        Args:
-            pull_number: The number of the pull request to query.
-            comment_id: Optional ID of a specific comment to focus on.
-            query: The GraphQL query as a string.
-            variables: A dictionary of variables for the query.
-            token: Your Gitlab personal access token.
-
-        Returns:
-            The JSON response from the Gitlab API.
         """
-        # Using graphql as REST API doesn't indicate resolved status for review comments
-        # TODO: grabbing the first 10 issues, 100 review threads, and 100 coments; add pagination to retrieve all
+        对GitLab API运行GraphQL查询以获取信息
+        
+        获取以下信息：
+        1. 未解决的审查评论
+        2. Merge Request相关的Issues
+        
+        Args:
+            pull_number: 要查询的Merge Request编号
+            comment_id: 可选的特定评论ID，用于聚焦特定评论
+        
+        Returns:
+            包含以下元素的元组：
+            - closing_issues_bodies: 相关Issues内容列表
+            - closing_issue_numbers: 相关Issue编号列表
+            - review_bodies: 审查评论内容列表（GitLab中为None）
+            - review_threads: 未解决的讨论线程列表
+            - thread_ids: 线程ID列表
+        """
+        # 首先获取相关的Issues
         response = httpx.get(
             f'{self.base_url}/merge_requests/{pull_number}/related_issues',
             headers=self.headers,
@@ -363,8 +609,10 @@ class GitlabPRHandler(GitlabIssueHandler):
         closing_issues_bodies = [issue['description'] for issue in closing_issues]
         closing_issue_numbers = [
             issue['iid'] for issue in closing_issues
-        ]  # Extract issue numbers
+        ]  # 提取Issue编号
 
+        # 使用GraphQL查询获取讨论信息，因为REST API不能指示讨论的解决状态
+        # TODO: 目前获取前10个issues、100个讨论线程和100个评论；需要添加分页以获取全部
         query = """
                 query($projectPath: ID!, $pr: String!) {
                     project(fullPath: $projectPath) {
@@ -396,6 +644,7 @@ class GitlabPRHandler(GitlabIssueHandler):
         project_path = f'{self.owner}/{self.repo}'
         variables = {'projectPath': project_path, 'pr': str(pull_number)}
 
+        # 发送GraphQL请求
         response = httpx.post(
             self.get_graphql_url(),
             json={'query': query, 'variables': variables},
@@ -404,52 +653,52 @@ class GitlabPRHandler(GitlabIssueHandler):
         response.raise_for_status()
         response_json = response.json()
 
-        # Parse the response to get closing issue references and unresolved review comments
+        # 解析响应以获取未解决的讨论
         pr_data = (
             response_json.get('data', {}).get('project', {}).get('mergeRequest', {})
         )
 
-        # Get review comments
+        # 获取审查评论（GitLab中为None）
         review_bodies = None
 
-        # Get unresolved review threads
+        # 获取未解决的讨论线程
         review_threads = []
-        thread_ids = []  # Store thread IDs; agent replies to the thread
+        thread_ids = []  # 存储线程ID；Agent回复该线程
         raw_review_threads = pr_data.get('discussions', {}).get('edges', [])
 
         for thread in raw_review_threads:
             node = thread.get('node', {})
-            if not node.get('resolved', True) and node.get(
-                'resolvable', True
-            ):  # Check if the review thread is unresolved
+            # 检查讨论线程是否未解决且可解决
+            if not node.get('resolved', True) and node.get('resolvable', True):
                 id = node.get('id')
                 thread_contains_comment_id = False
                 my_review_threads = node.get('notes', {}).get('nodes', [])
                 message = ''
                 files = []
+                
                 for i, review_thread in enumerate(my_review_threads):
+                    # 检查是否包含指定的comment_id
                     if (
                         comment_id is not None
                         and int(review_thread['id'].split('/')[-1]) == comment_id
                     ):
                         thread_contains_comment_id = True
 
-                    if (
-                        i == len(my_review_threads) - 1
-                    ):  # Check if it's the last thread in the thread
+                    # 如果是线程中的最后一个note
+                    if i == len(my_review_threads) - 1:
                         if len(my_review_threads) > 1:
-                            message += '---\n'  # Add "---" before the last message if there's more than one thread
+                            message += '---\n'  # 如果有多个线程，在最后一个消息前添加"---"
                         message += 'latest feedback:\n' + review_thread['body'] + '\n'
                     else:
-                        message += (
-                            review_thread['body'] + '\n'
-                        )  # Add each thread in a new line
+                        message += review_thread['body'] + '\n'  # 每个线程添加到新行
 
+                    # 收集相关文件路径
                     file = review_thread.get('position', {})
                     file = file.get('filePath') if file is not None else None
                     if file and file not in files:
                         files.append(file)
 
+                # 如果没有指定comment_id或线程包含指定的comment_id，则添加到结果中
                 if comment_id is None or thread_contains_comment_id:
                     unresolved_thread = ReviewThread(comment=message, files=files)
                     review_threads.append(unresolved_thread)
@@ -463,19 +712,31 @@ class GitlabPRHandler(GitlabIssueHandler):
             thread_ids,
         )
 
-    # Override processing of downloaded issues
     def get_pr_comments(
         self, pr_number: int, comment_id: int | None = None
     ) -> list[str] | None:
-        """Download comments for a specific pull request from Gitlab."""
+        """
+        从GitLab下载指定Merge Request的评论
+        
+        Args:
+            pr_number: Merge Request编号
+            comment_id: 可选的特定评论ID
+        
+        Returns:
+            评论内容列表，如果没有评论则返回None
+        """
+        # 构建Merge Request notes API URL
         url = f'{self.base_url}/merge_requests/{pr_number}/notes'
         params = {'per_page': 100, 'page': 1}
         all_comments = []
 
+        # 分页获取所有评论
         while True:
             response = httpx.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             comments = response.json()
+            
+            # 过滤出可解决且非系统的评论
             comments = [
                 comment
                 for comment in comments
@@ -485,6 +746,7 @@ class GitlabPRHandler(GitlabIssueHandler):
             if not comments:
                 break
 
+            # 如果指定了comment_id，查找匹配的评论
             if comment_id is not None:
                 matching_comment = next(
                     (
@@ -497,6 +759,7 @@ class GitlabPRHandler(GitlabIssueHandler):
                 if matching_comment:
                     return [matching_comment]
             else:
+                # 收集所有评论内容
                 all_comments.extend([comment['body'] for comment in comments])
 
             params['page'] += 1
@@ -512,37 +775,60 @@ class GitlabPRHandler(GitlabIssueHandler):
         review_threads: list[ReviewThread],
         thread_comments: list[str] | None,
     ) -> list[str]:
+        """
+        从外部Issue引用中获取上下文信息
+        
+        解析各种文本内容中的Issue引用，获取相关Issue的详细信息，
+        并将其添加到closing_issues列表中。
+        
+        Args:
+            closing_issues: 关闭的Issue列表（将被修改）
+            closing_issue_numbers: 关闭的Issue编号列表
+            issue_body: Issue主体内容
+            review_comments: 审查评论列表
+            review_threads: 审查线程列表
+            thread_comments: 线程评论列表
+        
+        Returns:
+            更新后的closing_issues列表
+        """
         new_issue_references = []
 
+        # 从Issue主体中提取Issue引用
         if issue_body:
             new_issue_references.extend(extract_issue_references(issue_body))
 
+        # 从审查评论中提取Issue引用
         if review_comments:
             for comment in review_comments:
                 new_issue_references.extend(extract_issue_references(comment))
 
+        # 从审查线程中提取Issue引用
         if review_threads:
             for review_thread in review_threads:
                 new_issue_references.extend(
                     extract_issue_references(review_thread.comment)
                 )
 
+        # 从线程评论中提取Issue引用
         if thread_comments:
             for thread_comment in thread_comments:
                 new_issue_references.extend(extract_issue_references(thread_comment))
 
+        # 去重并排除已存在的Issue编号
         non_duplicate_references = set(new_issue_references)
         unique_issue_references = non_duplicate_references.difference(
             closing_issue_numbers
         )
 
+        # 获取每个新引用Issue的详细信息
         for issue_number in unique_issue_references:
             try:
                 url = f'{self.base_url}/issues/{issue_number}'
                 response = httpx.get(url, headers=self.headers)
                 response.raise_for_status()
                 issue_data = response.json()
-                issue_body = issue_data.get('description', '')
+                issue_body = issue_data.get('description', '')  # GitLab使用description字段
                 if issue_body:
                     closing_issues.append(issue_body)
             except httpx.HTTPError as e:
@@ -553,24 +839,41 @@ class GitlabPRHandler(GitlabIssueHandler):
     def get_converted_issues(
         self, issue_numbers: list[int] | None = None, comment_id: int | None = None
     ) -> list[Issue]:
+        """
+        获取转换后的Merge Request列表
+        
+        Args:
+            issue_numbers: 要获取的Merge Request编号列表
+            comment_id: 可选的评论ID
+        
+        Returns:
+            转换后的Issue对象列表（代表Merge Requests）
+        
+        Raises:
+            ValueError: 当未指定issue_numbers时抛出异常
+        """
         if not issue_numbers:
             raise ValueError('Unspecified issue numbers')
 
+        # 下载所有Merge Requests
         all_issues = self.download_issues()
         logger.info(f'Limiting resolving to issues {issue_numbers}.')
+        # 过滤出指定IID的Merge Requests
         all_issues = [issue for issue in all_issues if issue['iid'] in issue_numbers]
 
         converted_issues = []
         for issue in all_issues:
-            # For PRs, body can be None
+            # 对于Merge Requests，body可能为None
             if any([issue.get(key) is None for key in ['iid', 'title']]):
                 logger.warning(f'Skipping #{issue} as it is missing iid or title.')
                 continue
 
-            # Handle None body for PRs
+            # 处理Merge Request可能为None的description字段
             body = (
                 issue.get('description') if issue.get('description') is not None else ''
             )
+            
+            # 下载Merge Request的Metadata
             (
                 closing_issues,
                 closing_issues_numbers,
@@ -578,11 +881,14 @@ class GitlabPRHandler(GitlabIssueHandler):
                 review_threads,
                 thread_ids,
             ) = self.download_pr_metadata(issue['iid'], comment_id=comment_id)
+            
+            # 获取源分支
             head_branch = issue['source_branch']
 
-            # Get PR thread comments
+            # 获取Merge Request的线程评论
             thread_comments = self.get_pr_comments(issue['iid'], comment_id=comment_id)
 
+            # 获取外部Issue引用的上下文
             closing_issues = self.get_context_from_external_issues_references(
                 closing_issues,
                 closing_issues_numbers,
@@ -592,6 +898,7 @@ class GitlabPRHandler(GitlabIssueHandler):
                 thread_comments,
             )
 
+            # 创建Issue详情对象（代表Merge Request）
             issue_details = Issue(
                 owner=self.owner,
                 repo=self.repo,
