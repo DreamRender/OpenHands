@@ -1,39 +1,43 @@
+# 导入 LLM 工具相关类型
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
+# 导入工具名称常量
 from openhands.llm.tool_names import FINISH_TOOL_NAME
 
-_FINISH_DESCRIPTION = """Signals the completion of the current task or conversation.
+# 完成工具的描述
+_FINISH_DESCRIPTION = """标记当前任务或对话的完成。
 
-Use this tool when:
-- You have successfully completed the user's requested task
-- You cannot proceed further due to technical limitations or missing information
+在以下情况下使用此工具：
+- 您已成功完成用户请求的任务
+- 由于技术限制或缺少信息无法进一步进行
 
-The message should include:
-- A clear summary of actions taken and their results
-- Any next steps for the user
-- Explanation if you're unable to complete the task
-- Any follow-up questions if more information is needed
+消息应包括：
+- 所采取行动及其结果的清晰总结
+- 用户的任何后续步骤
+- 如果无法完成任务的解释
+- 如果需要更多信息的任何后续问题
 
-The task_completed field should be set to True if you believed you have completed the task, and False otherwise.
+如果您认为已完成任务，task_completed 字段应设置为 True，否则设置为 False。
 """
 
+# 创建完成工具配置
 FinishTool = ChatCompletionToolParam(
     type='function',
     function=ChatCompletionToolParamFunctionChunk(
-        name=FINISH_TOOL_NAME,
-        description=_FINISH_DESCRIPTION,
+        name=FINISH_TOOL_NAME,  # 工具名称常量
+        description=_FINISH_DESCRIPTION,  # 工具描述
         parameters={
             'type': 'object',
-            'required': ['message', 'task_completed'],
+            'required': ['message', 'task_completed'],  # 必需参数列表
             'properties': {
                 'message': {
                     'type': 'string',
-                    'description': 'Final message to send to the user',
+                    'description': '发送给用户的最终消息',
                 },
                 'task_completed': {
                     'type': 'string',
-                    'enum': ['true', 'false', 'partial'],
-                    'description': 'Whether you have completed the task.',
+                    'enum': ['true', 'false', 'partial'],  # 限制可选值
+                    'description': '您是否已完成任务。',
                 },
             },
         },
