@@ -22,9 +22,21 @@ from openhands.utils.shutdown_listener import should_continue
 
 
 def split_bash_commands(commands: str) -> list[str]:
+    """
+    将bash命令字符串拆分为单个命令列表。
+    
+    使用bashlex库解析命令，如果解析失败则返回原始命令。
+    
+    Args:
+        commands (str): 要拆分的bash命令字符串
+        
+    Returns:
+        list[str]: 拆分后的命令列表
+    """
     if not commands.strip():
         return ['']
     try:
+        # 使用bashlex解析bash命令
         parsed = bashlex.parse(commands)
     except (
         bashlex.errors.ParsingError,
@@ -32,40 +44,41 @@ def split_bash_commands(commands: str) -> list[str]:
         TypeError,
         AttributeError,
     ):
-        # Added AttributeError to catch 'str' object has no attribute 'kind' error (issue #8369)
+        # 添加了AttributeError来捕获'str' object has no attribute 'kind'错误 (issue #8369)
         logger.debug(
             f'Failed to parse bash commands\n'
             f'[input]: {commands}\n'
             f'[warning]: {traceback.format_exc()}\n'
             f'The original command will be returned as is.'
         )
-        # If parsing fails, return the original commands
+        # 如果解析失败，返回原始命令
         return [commands]
 
     result: list[str] = []
     last_end = 0
 
+    # 遍历解析后的节点
     for node in parsed:
         start, end = node.pos
 
-        # Include any text between the last command and this one
+        # 包含上一个命令和当前命令之间的任何文本
         if start > last_end:
             between = commands[last_end:start]
             logger.debug(f'BASH PARSING between: {between}')
             if result:
                 result[-1] += between.rstrip()
             elif between.strip():
-                # THIS SHOULD NOT HAPPEN
+                # 这种情况不应该发生
                 result.append(between.rstrip())
 
-        # Extract the command, preserving original formatting
+        # 提取命令，保留原始格式
         command = commands[start:end].rstrip()
         logger.debug(f'BASH PARSING command: {command}')
         result.append(command)
 
         last_end = end
 
-    # Add any remaining text after the last command to the last command
+    # 将最后一个命令之后的任何剩余文本添加到最后一个命令
     remaining = commands[last_end:].rstrip()
     logger.debug(f'BASH PARSING remaining: {remaining}')
     if last_end < len(commands) and result:
@@ -80,8 +93,14 @@ def split_bash_commands(commands: str) -> list[str]:
 
 def escape_bash_special_chars(command: str) -> str:
     r"""
-    Escapes characters that have different interpretations in bash vs python.
-    Specifically handles escape sequences like \;, \|, \&, etc.
+    转义在bash和python中有不同解释的字符。
+    专门处理转义序列，如\;, \|, \&等。
+    
+    Args:
+        command (str): 要转义的命令字符串
+        
+    Returns:
+        str: 转义后的命令字符串
     """
     if command.strip() == '':
         return ''
@@ -91,55 +110,63 @@ def escape_bash_special_chars(command: str) -> str:
         last_pos = 0
 
         def visit_node(node: Any) -> None:
+            """
+            递归访问AST节点并处理特殊字符转义。
+            
+            Args:
+                node (Any): bashlex AST节点
+            """
             nonlocal last_pos
+            # 处理heredoc重定向
             if (
                 node.kind == 'redirect'
                 and hasattr(node, 'heredoc')
                 and node.heredoc is not None
             ):
-                # We're entering a heredoc - preserve everything as-is until we see EOF
-                # Store the heredoc end marker (usually 'EOF' but could be different)
+                # 我们进入了heredoc - 保持所有内容不变直到看到EOF
+                # 存储heredoc结束标记（通常是'EOF'但可能不同）
                 between = command[last_pos : node.pos[0]]
                 parts.append(between)
-                # Add the heredoc start marker
+                # 添加heredoc开始标记
                 parts.append(command[node.pos[0] : node.heredoc.pos[0]])
-                # Add the heredoc content as-is
+                # 原样添加heredoc内容
                 parts.append(command[node.heredoc.pos[0] : node.heredoc.pos[1]])
                 last_pos = node.pos[1]
                 return
 
+            # 处理word节点
             if node.kind == 'word':
-                # Get the raw text between the last position and current word
+                # 获取最后位置和当前word之间的原始文本
                 between = command[last_pos : node.pos[0]]
                 word_text = command[node.pos[0] : node.pos[1]]
 
-                # Add the between text, escaping special characters
+                # 添加between文本，转义特殊字符
                 between = re.sub(r'\\([;&|><])', r'\\\\\1', between)
                 parts.append(between)
 
-                # Check if word_text is a quoted string or command substitution
+                # 检查word_text是否为引用字符串或命令替换
                 if (
                     (word_text.startswith('"') and word_text.endswith('"'))
                     or (word_text.startswith("'") and word_text.endswith("'"))
                     or (word_text.startswith('$(') and word_text.endswith(')'))
                     or (word_text.startswith('`') and word_text.endswith('`'))
                 ):
-                    # Preserve quoted strings, command substitutions, and heredoc content as-is
+                    # 保持引用字符串、命令替换和heredoc内容不变
                     parts.append(word_text)
                 else:
-                    # Escape special chars in unquoted text
+                    # 在未引用文本中转义特殊字符
                     word_text = re.sub(r'\\([;&|><])', r'\\\\\1', word_text)
                     parts.append(word_text)
 
                 last_pos = node.pos[1]
                 return
 
-            # Visit child nodes
+            # 访问子节点
             if hasattr(node, 'parts'):
                 for part in node.parts:
                     visit_node(part)
 
-        # Process all nodes in the AST
+        # 处理AST中的所有节点
         nodes = list(bashlex.parse(command))
         for node in nodes:
             between = command[last_pos : node.pos[0]]
@@ -148,7 +175,7 @@ def escape_bash_special_chars(command: str) -> str:
             last_pos = node.pos[0]
             visit_node(node)
 
-        # Handle any remaining text after the last word
+        # 处理最后一个word之后的任何剩余文本
         remaining = command[last_pos:]
         parts.append(remaining)
         return ''.join(parts)
@@ -163,20 +190,42 @@ def escape_bash_special_chars(command: str) -> str:
 
 
 class BashCommandStatus(Enum):
-    CONTINUE = 'continue'
-    COMPLETED = 'completed'
-    NO_CHANGE_TIMEOUT = 'no_change_timeout'
-    HARD_TIMEOUT = 'hard_timeout'
+    """
+    Bash命令执行状态枚举。
+    
+    定义了命令执行的各种状态，用于跟踪命令的生命周期。
+    """
+    CONTINUE = 'continue'  # 命令继续执行中
+    COMPLETED = 'completed'  # 命令已完成
+    NO_CHANGE_TIMEOUT = 'no_change_timeout'  # 无变化超时
+    HARD_TIMEOUT = 'hard_timeout'  # 硬超时
 
 
 def _remove_command_prefix(command_output: str, command: str) -> str:
+    """
+    从命令输出中移除命令前缀。
+    
+    Args:
+        command_output (str): 命令输出
+        command (str): 执行的命令
+        
+    Returns:
+        str: 移除前缀后的输出
+    """
     return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
 
 
 class BashSession:
-    POLL_INTERVAL = 0.5
-    HISTORY_LIMIT = 10_000
-    PS1 = CmdOutputMetadata.to_ps1_prompt()
+    """
+    Bash会话管理类。
+    
+    使用tmux管理bash会话，提供命令执行、超时处理等功能。
+    """
+    
+    # 类常量定义
+    POLL_INTERVAL = 0.5  # 轮询间隔（秒）
+    HISTORY_LIMIT = 10_000  # 历史记录限制
+    PS1 = CmdOutputMetadata.to_ps1_prompt()  # 提示符格式
 
     def __init__(
         self,
@@ -185,21 +234,38 @@ class BashSession:
         no_change_timeout_seconds: int = 30,
         max_memory_mb: int | None = None,
     ):
+        """
+        初始化Bash会话。
+        
+        Args:
+            work_dir (str): 工作目录
+            username (str | None): 用户名，默认为None
+            no_change_timeout_seconds (int): 无变化超时时间（秒），默认30秒
+            max_memory_mb (int | None): 最大内存限制（MB），默认为None
+        """
         self.NO_CHANGE_TIMEOUT_SECONDS = no_change_timeout_seconds
         self.work_dir = work_dir
         self.username = username
-        self._initialized = False
+        self._initialized = False  # 初始化状态标志
         self.max_memory_mb = max_memory_mb
 
     def initialize(self) -> None:
+        """
+        初始化tmux会话和bash环境。
+        
+        创建tmux服务器、会话、窗口和窗格，配置bash环境。
+        """
+        # 创建tmux服务器
         self.server = libtmux.Server()
         _shell_command = '/bin/bash'
+        
+        # 根据用户名选择shell命令
         if self.username in ['root', 'openhands']:
-            # This starts a non-login (new) shell for the given user
+            # 这会为给定用户启动一个非登录（新）shell
             _shell_command = f'su {self.username} -'
 
-        # FIXME: we will introduce memory limit using sysbox-runc in coming PR
-        # # otherwise, we are running as the CURRENT USER (e.g., when running LocalRuntime)
+        # 修复：我们将在即将到来的PR中使用sysbox-runc引入内存限制
+        # # 否则，我们以当前用户身份运行（例如，运行LocalRuntime时）
         # if self.max_memory_mb is not None:
         #     window_command = (
         #         f'prlimit --as={self.max_memory_mb * 1024 * 1024} {_shell_command}'
@@ -208,56 +274,65 @@ class BashSession:
         window_command = _shell_command
 
         logger.debug(f'Initializing bash session with command: {window_command}')
+        # 创建唯一的会话名称
         session_name = f'openhands-{self.username}-{uuid.uuid4()}'
+        
+        # 创建新的tmux会话
         self.session = self.server.new_session(
             session_name=session_name,
-            start_directory=self.work_dir,  # This parameter is supported by libtmux
+            start_directory=self.work_dir,  # libtmux支持此参数
             kill_session=True,
             x=1000,
             y=1000,
         )
 
-        # Set history limit to a large number to avoid losing history
+        # 设置历史记录限制为大数字以避免丢失历史记录
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
         self.session.set_option('history-limit', str(self.HISTORY_LIMIT), _global=True)
         self.session.history_limit = self.HISTORY_LIMIT
-        # We need to create a new pane because the initial pane's history limit is (default) 2000
+        
+        # 我们需要创建一个新窗格，因为初始窗格的历史记录限制是（默认）2000
         _initial_window = self.session.active_window
         self.window = self.session.new_window(
             window_name='bash',
             window_shell=window_command,
-            start_directory=self.work_dir,  # This parameter is supported by libtmux
+            start_directory=self.work_dir,  # libtmux支持此参数
         )
         self.pane = self.window.active_pane
         logger.debug(f'pane: {self.pane}; history_limit: {self.session.history_limit}')
         _initial_window.kill()
 
-        # Configure bash to use simple PS1 and disable PS2
+        # 配置bash使用简单的PS1并禁用PS2
         self.pane.send_keys(
             f'export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
         )
-        time.sleep(0.1)  # Wait for command to take effect
+        time.sleep(0.1)  # 等待命令生效
         self._clear_screen()
 
-        # Store the last command for interactive input handling
+        # 存储用于交互式输入处理的最后一个命令
         self.prev_status: BashCommandStatus | None = None
         self.prev_output: str = ''
         self._closed: bool = False
         logger.debug(f'Bash session initialized with work dir: {self.work_dir}')
 
-        # Maintain the current working directory
+        # 维护当前工作目录
         self._cwd = os.path.abspath(self.work_dir)
         self._initialized = True
 
     def __del__(self) -> None:
-        """Ensure the session is closed when the object is destroyed."""
+        """确保对象销毁时关闭会话。"""
         self.close()
 
     def _get_pane_content(self) -> str:
-        """Capture the current pane content and update the buffer."""
+        """
+        捕获当前窗格内容并更新缓冲区。
+        
+        Returns:
+            str: 窗格内容
+        """
         content = '\n'.join(
             map(
-                # avoid double newlines
+                # 避免双重换行
                 lambda line: line.rstrip(),
                 self.pane.cmd('capture-pane', '-J', '-pS', '-').stdout,
             )
@@ -265,7 +340,7 @@ class BashSession:
         return content
 
     def close(self) -> None:
-        """Clean up the session."""
+        """清理会话。"""
         if self._closed:
             return
         self.session.kill()
@@ -273,16 +348,30 @@ class BashSession:
 
     @property
     def cwd(self) -> str:
+        """
+        获取当前工作目录。
+        
+        Returns:
+            str: 当前工作目录路径
+        """
         return self._cwd
 
     def _is_special_key(self, command: str) -> bool:
-        """Check if the command is a special key."""
-        # Special keys are of the form C-<key>
+        """
+        检查命令是否为特殊按键。
+        
+        Args:
+            command (str): 要检查的命令
+            
+        Returns:
+            bool: 如果是特殊按键则返回True
+        """
+        # 特殊按键的形式为C-<key>
         _command = command.strip()
         return _command.startswith('C-') and len(_command) == 3
 
     def _clear_screen(self) -> None:
-        """Clear the tmux pane screen and history."""
+        """清除tmux窗格屏幕和历史记录。"""
         self.pane.send_keys('C-l', enter=False)
         time.sleep(0.1)
         self.pane.cmd('clear-history')
@@ -294,27 +383,42 @@ class BashSession:
         metadata: CmdOutputMetadata,
         continue_prefix: str = '',
     ) -> str:
-        """Get the command output with the previous command output removed.
+        """
+        获取移除了前一个命令输出的命令输出。
 
         Args:
-            command: The command that was executed.
-            raw_command_output: The raw output from the command.
-            metadata: The metadata object to store prefix/suffix in.
-            continue_prefix: The prefix to add to the command output if it's a continuation of the previous command.
+            command (str): 执行的命令
+            raw_command_output (str): 来自命令的原始输出
+            metadata (CmdOutputMetadata): 存储前缀/后缀的metadata对象
+            continue_prefix (str): 如果是前一个命令的继续，添加到命令输出的前缀
+
+        Returns:
+            str: 处理后的命令输出
         """
-        # remove the previous command output from the new output if any
+        # 如果有的话，从新输出中移除前一个命令输出
         if self.prev_output:
             command_output = raw_command_output.removeprefix(self.prev_output)
             metadata.prefix = continue_prefix
         else:
             command_output = raw_command_output
-        self.prev_output = raw_command_output  # update current command output anyway
+        self.prev_output = raw_command_output  # 无论如何更新当前命令输出
         command_output = _remove_command_prefix(command_output, command)
         return command_output.rstrip()
 
     def _handle_completed_command(
         self, command: str, pane_content: str, ps1_matches: list[re.Match]
     ) -> CmdOutputObservation:
+        """
+        处理已完成的命令。
+        
+        Args:
+            command (str): 执行的命令
+            pane_content (str): 窗格内容
+            ps1_matches (list[re.Match]): PS1匹配列表
+            
+        Returns:
+            CmdOutputObservation: 命令输出观察对象
+        """
         is_special_key = self._is_special_key(command)
         assert len(ps1_matches) >= 1, (
             f'Expected at least one PS1 metadata block, but got {len(ps1_matches)}.\n'
@@ -322,16 +426,16 @@ class BashSession:
         )
         metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
 
-        # Special case where the previous command output is truncated due to history limit
-        # We should get the content BEFORE the last PS1 prompt
+        # 前一个命令输出由于历史记录限制而被截断的特殊情况
+        # 我们应该获取最后一个PS1提示符之前的内容
         get_content_before_last_match = bool(len(ps1_matches) == 1)
 
-        # Update the current working directory if it has changed
+        # 如果当前工作目录已更改，则更新它
         if metadata.working_dir != self._cwd and metadata.working_dir:
             self._cwd = metadata.working_dir
 
         logger.debug(f'COMMAND OUTPUT: {pane_content}')
-        # Extract the command output between the two PS1 prompts
+        # 提取两个PS1提示符之间的命令输出
         raw_command_output = self._combine_outputs_between_matches(
             pane_content,
             ps1_matches,
@@ -339,22 +443,25 @@ class BashSession:
         )
 
         if get_content_before_last_match:
-            # Count the number of lines in the truncated output
+            # 计算截断输出中的行数
             num_lines = len(raw_command_output.splitlines())
             metadata.prefix = f'[Previous command outputs are truncated. Showing the last {num_lines} lines of the output below.]\n'
+            # 翻译：[前一个命令输出已被截断。显示下面输出的最后{num_lines}行。]
 
         metadata.suffix = (
             f'\n[The command completed with exit code {metadata.exit_code}.]'
             if not is_special_key
             else f'\n[The command completed with exit code {metadata.exit_code}. CTRL+{command[-1].upper()} was sent.]'
         )
+        # 翻译：[命令完成，退出代码为{metadata.exit_code}。] 或 [命令完成，退出代码为{metadata.exit_code}。发送了CTRL+{command[-1].upper()}。]
+        
         command_output = self._get_command_output(
             command,
             raw_command_output,
             metadata,
         )
         self.prev_status = BashCommandStatus.COMPLETED
-        self.prev_output = ''  # Reset previous command output
+        self.prev_output = ''  # 重置前一个命令输出
         self._ready_for_next_command()
         return CmdOutputObservation(
             content=command_output,
@@ -368,6 +475,17 @@ class BashSession:
         pane_content: str,
         ps1_matches: list[re.Match],
     ) -> CmdOutputObservation:
+        """
+        处理无变化超时的命令。
+        
+        Args:
+            command (str): 执行的命令
+            pane_content (str): 窗格内容
+            ps1_matches (list[re.Match]): PS1匹配列表
+            
+        Returns:
+            CmdOutputObservation: 命令输出观察对象
+        """
         self.prev_status = BashCommandStatus.NO_CHANGE_TIMEOUT
         if len(ps1_matches) != 1:
             logger.warning(
@@ -377,16 +495,19 @@ class BashSession:
         raw_command_output = self._combine_outputs_between_matches(
             pane_content, ps1_matches
         )
-        metadata = CmdOutputMetadata()  # No metadata available
+        metadata = CmdOutputMetadata()  # 无metadata可用
         metadata.suffix = (
             f'\n[The command has no new output after {self.NO_CHANGE_TIMEOUT_SECONDS} seconds. '
             f'{TIMEOUT_MESSAGE_TEMPLATE}]'
         )
+        # 翻译：[命令在{self.NO_CHANGE_TIMEOUT_SECONDS}秒后没有新输出。{TIMEOUT_MESSAGE_TEMPLATE}]
+        
         command_output = self._get_command_output(
             command,
             raw_command_output,
             metadata,
             continue_prefix='[Below is the output of the previous command.]\n',
+            # 翻译：[下面是前一个命令的输出。]
         )
         return CmdOutputObservation(
             content=command_output,
@@ -401,6 +522,18 @@ class BashSession:
         ps1_matches: list[re.Match],
         timeout: float,
     ) -> CmdOutputObservation:
+        """
+        处理硬超时的命令。
+        
+        Args:
+            command (str): 执行的命令
+            pane_content (str): 窗格内容
+            ps1_matches (list[re.Match]): PS1匹配列表
+            timeout (float): 超时时间
+            
+        Returns:
+            CmdOutputObservation: 命令输出观察对象
+        """
         self.prev_status = BashCommandStatus.HARD_TIMEOUT
         if len(ps1_matches) != 1:
             logger.warning(
@@ -410,16 +543,19 @@ class BashSession:
         raw_command_output = self._combine_outputs_between_matches(
             pane_content, ps1_matches
         )
-        metadata = CmdOutputMetadata()  # No metadata available
+        metadata = CmdOutputMetadata()  # 无metadata可用
         metadata.suffix = (
             f'\n[The command timed out after {timeout} seconds. '
             f'{TIMEOUT_MESSAGE_TEMPLATE}]'
         )
+        # 翻译：[命令在{timeout}秒后超时。{TIMEOUT_MESSAGE_TEMPLATE}]
+        
         command_output = self._get_command_output(
             command,
             raw_command_output,
             metadata,
             continue_prefix='[Below is the output of the previous command.]\n',
+            # 翻译：[下面是前一个命令的输出。]
         )
 
         return CmdOutputObservation(
@@ -429,8 +565,8 @@ class BashSession:
         )
 
     def _ready_for_next_command(self) -> None:
-        """Reset the content buffer for a new command."""
-        # Clear the current content
+        """为新命令重置内容缓冲区。"""
+        # 清除当前内容
         self._clear_screen()
 
     def _combine_outputs_between_matches(
@@ -439,48 +575,59 @@ class BashSession:
         ps1_matches: list[re.Match],
         get_content_before_last_match: bool = False,
     ) -> str:
-        """Combine all outputs between PS1 matches.
+        """
+        组合PS1匹配之间的所有输出。
 
         Args:
-            pane_content: The full pane content containing PS1 prompts and command outputs
-            ps1_matches: List of regex matches for PS1 prompts
-            get_content_before_last_match: when there's only one PS1 match, whether to get
-                the content before the last PS1 prompt (True) or after the last PS1 prompt (False)
+            pane_content (str): 包含PS1提示符和命令输出的完整窗格内容
+            ps1_matches (list[re.Match]): PS1提示符的正则表达式匹配列表
+            get_content_before_last_match (bool): 当只有一个PS1匹配时，是否获取
+                最后一个PS1提示符之前的内容（True）还是之后的内容（False）
+                
         Returns:
-            Combined string of all outputs between matches
+            str: 匹配之间所有输出的组合字符串
         """
         if len(ps1_matches) == 1:
             if get_content_before_last_match:
-                # The command output is the content before the last PS1 prompt
+                # 命令输出是最后一个PS1提示符之前的内容
                 return pane_content[: ps1_matches[0].start()]
             else:
-                # The command output is the content after the last PS1 prompt
+                # 命令输出是最后一个PS1提示符之后的内容
                 return pane_content[ps1_matches[0].end() + 1 :]
         elif len(ps1_matches) == 0:
             return pane_content
+        
         combined_output = ''
         for i in range(len(ps1_matches) - 1):
-            # Extract content between current and next PS1 prompt
+            # 提取当前和下一个PS1提示符之间的内容
             output_segment = pane_content[
                 ps1_matches[i].end() + 1 : ps1_matches[i + 1].start()
             ]
             combined_output += output_segment + '\n'
-        # Add the content after the last PS1 prompt
+        # 添加最后一个PS1提示符之后的内容
         combined_output += pane_content[ps1_matches[-1].end() + 1 :]
         logger.debug(f'COMBINED OUTPUT: {combined_output}')
         return combined_output
 
     def execute(self, action: CmdRunAction) -> CmdOutputObservation | ErrorObservation:
-        """Execute a command in the bash session."""
+        """
+        在bash会话中执行命令。
+        
+        Args:
+            action (CmdRunAction): 要执行的命令Action
+            
+        Returns:
+            CmdOutputObservation | ErrorObservation: 命令输出观察对象或错误观察对象
+        """
         if not self._initialized:
             raise RuntimeError('Bash session is not initialized')
 
-        # Strip the command of any leading/trailing whitespace
+        # 去除命令的前导/尾随空格
         logger.debug(f'RECEIVED ACTION: {action}')
         command = action.command.strip()
         is_input: bool = action.is_input
 
-        # If the previous command is not completed, we need to check if the command is empty
+        # 如果前一个命令未完成，我们需要检查命令是否为空
         if self.prev_status not in {
             BashCommandStatus.CONTINUE,
             BashCommandStatus.NO_CHANGE_TIMEOUT,
@@ -489,17 +636,19 @@ class BashSession:
             if command == '':
                 return CmdOutputObservation(
                     content='ERROR: No previous running command to retrieve logs from.',
+                    # 翻译：错误：没有正在运行的前一个命令可以检索日志。
                     command='',
                     metadata=CmdOutputMetadata(),
                 )
             if is_input:
                 return CmdOutputObservation(
                     content='ERROR: No previous running command to interact with.',
+                    # 翻译：错误：没有正在运行的前一个命令可以交互。
                     command='',
                     metadata=CmdOutputMetadata(),
                 )
 
-        # Check if the command is a single command or multiple commands
+        # 检查命令是单个命令还是多个命令
         splited_commands = split_bash_commands(command)
         if len(splited_commands) > 1:
             return ErrorObservation(
@@ -508,9 +657,10 @@ class BashSession:
                     f'Please run each command separately OR chain them into a single command via && or ;\n'
                     f'Provided commands:\n{"\n".join(f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands))}'
                 )
+                # 翻译：错误：不能同时执行多个命令。请分别运行每个命令或通过&&或;将它们链接成一个命令。
             )
 
-        # Get initial state before sending command
+        # 在发送命令之前获取初始状态
         initial_pane_output = self._get_pane_content()
         initial_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
             initial_pane_output
@@ -521,10 +671,10 @@ class BashSession:
         start_time = time.time()
         last_change_time = start_time
         last_pane_output = (
-            initial_pane_output  # Use initial output as the starting point
+            initial_pane_output  # 使用初始输出作为起点
         )
 
-        # When prev command is still running, and we are trying to send a new command
+        # 当前一个命令仍在运行时，我们试图发送一个新命令
         if (
             self.prev_status
             in {
@@ -533,20 +683,20 @@ class BashSession:
             }
             and not last_pane_output.rstrip().endswith(
                 CMD_OUTPUT_PS1_END.rstrip()
-            )  # prev command is not completed
+            )  # 前一个命令未完成
             and not is_input
-            and command != ''  # not input and not empty command
+            and command != ''  # 不是输入且不是空命令
         ):
             _ps1_matches = CmdOutputMetadata.matches_ps1_metadata(last_pane_output)
-            # Use initial_ps1_matches if _ps1_matches is empty, otherwise use _ps1_matches
-            # This handles the case where the prompt might be scrolled off screen but existed before
+            # 如果_ps1_matches为空，使用initial_ps1_matches，否则使用_ps1_matches
+            # 这处理了提示符可能滚动出屏幕但之前存在的情况
             current_matches_for_output = (
                 _ps1_matches if _ps1_matches else initial_ps1_matches
             )
             raw_command_output = self._combine_outputs_between_matches(
                 last_pane_output, current_matches_for_output
             )
-            metadata = CmdOutputMetadata()  # No metadata available
+            metadata = CmdOutputMetadata()  # 无metadata可用
             metadata.suffix = (
                 f'\n[Your command "{command}" is NOT executed. '
                 f'The previous command is still running - You CANNOT send new commands until the previous command is completed. '
@@ -555,12 +705,15 @@ class BashSession:
                 'send other commands to interact with the current process, '
                 'or send keys ("C-c", "C-z", "C-d") to interrupt/kill the previous command before sending your new command.]'
             )
+            # 翻译：[您的命令"{command}"未被执行。前一个命令仍在运行 - 在前一个命令完成之前，您不能发送新命令。通过将`is_input`设置为`true`，您可以与当前进程交互：您可以通过发送空命令''等待更长时间以查看前一个命令的额外输出，发送其他命令与当前进程交互，或发送按键（"C-c"、"C-z"、"C-d"）来中断/终止前一个命令，然后发送您的新命令。]
+            
             logger.debug(f'PREVIOUS COMMAND OUTPUT: {raw_command_output}')
             command_output = self._get_command_output(
                 command,
                 raw_command_output,
                 metadata,
                 continue_prefix='[Below is the output of the previous command.]\n',
+                # 翻译：[下面是前一个命令的输出。]
             )
             return CmdOutputObservation(
                 command=command,
@@ -568,7 +721,7 @@ class BashSession:
                 metadata=metadata,
             )
 
-        # Send actual command/inputs to the pane
+        # 向窗格发送实际命令/输入
         if command != '':
             is_special_key = self._is_special_key(command)
             if is_input:
@@ -578,7 +731,7 @@ class BashSession:
                     enter=not is_special_key,
                 )
             else:
-                # convert command to raw string
+                # 将命令转换为原始字符串
                 command = escape_bash_special_chars(command)
                 logger.debug(f'SENDING COMMAND: {command!r}')
                 self.pane.send_keys(
@@ -586,7 +739,7 @@ class BashSession:
                     enter=not is_special_key,
                 )
 
-        # Loop until the command completes or times out
+        # 循环直到命令完成或超时
         while should_continue():
             _start_time = time.time()
             logger.debug(f'GETTING PANE CONTENT at {_start_time}')
@@ -604,10 +757,10 @@ class BashSession:
                 last_change_time = time.time()
                 logger.debug(f'CONTENT UPDATED DETECTED at {last_change_time}')
 
-            # 1) Execution completed:
-            # Condition 1: A new prompt has appeared since the command started.
-            # Condition 2: The prompt count hasn't increased (potentially because the initial one scrolled off),
-            # BUT the *current* visible pane ends with a prompt, indicating completion.
+            # 1) 执行完成：
+            # 条件1：自命令开始以来出现了新提示符。
+            # 条件2：提示符计数没有增加（可能因为初始提示符滚动出去了），
+            # 但*当前*可见窗格以提示符结尾，表示完成。
             if (
                 current_ps1_count > initial_ps1_count
                 or cur_pane_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
@@ -618,11 +771,10 @@ class BashSession:
                     ps1_matches=ps1_matches,
                 )
 
-            # Timeout checks should only trigger if a new prompt hasn't appeared yet.
+            # 超时检查应该只在新提示符尚未出现时触发。
 
-            # 2) Execution timed out since there's no change in output
-            # for a while (self.NO_CHANGE_TIMEOUT_SECONDS)
-            # We ignore this if the command is *blocking*
+            # 2) 执行超时，因为输出在一段时间内没有变化（self.NO_CHANGE_TIMEOUT_SECONDS）
+            # 如果命令是*阻塞*的，我们忽略这个
             time_since_last_change = time.time() - last_change_time
             logger.debug(
                 f'CHECKING NO CHANGE TIMEOUT ({self.NO_CHANGE_TIMEOUT_SECONDS}s): elapsed {time_since_last_change}. Action blocking: {action.blocking}'
@@ -637,7 +789,7 @@ class BashSession:
                     ps1_matches=ps1_matches,
                 )
 
-            # 3) Execution timed out due to hard timeout
+            # 3) 由于硬超时而执行超时
             elapsed_time = time.time() - start_time
             logger.debug(
                 f'CHECKING HARD TIMEOUT ({action.timeout}s): elapsed {elapsed_time:.2f}'
@@ -654,3 +806,4 @@ class BashSession:
             logger.debug(f'SLEEPING for {self.POLL_INTERVAL} seconds for next poll')
             time.sleep(self.POLL_INTERVAL)
         raise RuntimeError('Bash session was likely interrupted...')
+        # 翻译：Bash会话可能被中断...

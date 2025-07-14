@@ -1,5 +1,5 @@
 """
-Utility module for generating file viewer HTML content.
+用于生成文件查看器HTML内容的实用模块。
 """
 
 import base64
@@ -9,21 +9,22 @@ import os
 
 def generate_file_viewer_html(file_path: str) -> str:
     """
-    Generate HTML content for viewing different file types.
+    为查看不同文件类型生成HTML内容。
 
     Args:
-        file_path: The absolute path to the file
+        file_path (str): 文件的绝对路径
 
     Returns:
-        str: HTML content for viewing the file
+        str: 用于查看文件的HTML内容
 
     Raises:
-        ValueError: If the file extension is not supported
+        ValueError: 如果文件扩展名不受支持或文件不存在
     """
+    # 获取文件扩展名和文件名
     file_extension = os.path.splitext(file_path)[1].lower()
     file_name = os.path.basename(file_path)
 
-    # Define supported file extensions
+    # 定义支持的文件扩展名
     supported_extensions = [
         '.pdf',
         '.png',
@@ -32,32 +33,35 @@ def generate_file_viewer_html(file_path: str) -> str:
         '.gif',
     ]
 
-    # Check if the file extension is supported
+    # 检查文件扩展名是否受支持
     if file_extension not in supported_extensions:
         raise ValueError(
             f'Unsupported file extension: {file_extension}. '
             f'Supported extensions are: {", ".join(supported_extensions)}'
         )
+        # 翻译：不支持的文件扩展名：{file_extension}。支持的扩展名有：{", ".join(supported_extensions)}
 
-    # Check if the file exists
+    # 检查文件是否存在
     if not os.path.exists(file_path):
         raise ValueError(
             f'File not found locally: {file_path}. Please download the file to the local machine and try again.'
         )
+        # 翻译：本地未找到文件：{file_path}。请将文件下载到本地机器并重试。
 
-    # Read file content directly
+    # 直接读取文件内容
     file_content = None
     mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
 
-    # For binary files (images, PDFs), encode as base64
+    # 对于二进制文件（图像、PDF），编码为base64
     if file_extension in ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.bmp']:
         with open(file_path, 'rb') as file:
             file_content = base64.b64encode(file.read()).decode('utf-8')
-    # For text files, read as text
+    # 对于文本文件，读取为文本
     else:
         with open(file_path, 'r', encoding='utf-8') as file:
             file_content = file.read()
 
+    # 返回生成的HTML内容
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -87,34 +91,38 @@ def generate_file_viewer_html(file_path: str) -> str:
     async function loadContent() {{
         try {{
             if (fileExtension === '.pdf') {{
+                // 设置PDF.js worker
                 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                
+                // 将base64转换为二进制数据
                 const binaryString = atob(fileBase64);
                 const bytes = new Uint8Array(binaryString.length);
                 for (let i = 0; i < binaryString.length; i++) {{
                     bytes[i] = binaryString.charCodeAt(i);
                 }}
 
+                // 加载PDF文档
                 const loadingTask = pdfjsLib.getDocument({{data: bytes.buffer}});
                 const pdf = await loadingTask.promise;
 
-                // Get total number of pages
+                // 获取总页数
                 const numPages = pdf.numPages;
 
-                // Render each page
+                // 渲染每一页
                 for (let pageNum = 1; pageNum <= numPages; pageNum++) {{
                     const page = await pdf.getPage(pageNum);
 
-                    // Set scale for rendering
+                    // 设置渲染比例
                     const viewport = page.getViewport({{ scale: 1.5 }});
 
-                    // Create canvas for rendering
+                    // 创建渲染用的canvas
                     const canvas = document.createElement('canvas');
                     canvas.className = 'page';
                     canvas.width = viewport.width;
                     canvas.height = viewport.height;
                     container.appendChild(canvas);
 
-                    // Render PDF page into canvas context
+                    // 将PDF页面渲染到canvas上下文中
                     const context = canvas.getContext('2d');
                     const renderContext = {{
                         canvasContext: context,
@@ -124,11 +132,13 @@ def generate_file_viewer_html(file_path: str) -> str:
                     await page.render(renderContext).promise;
                 }}
             }} else if (['.png', '.jpg', '.jpeg', '.gif', '.bmp'].includes(fileExtension)) {{
+                // 创建图像元素
                 const img = document.createElement('img');
                 img.src = `data:${{mimeType}};base64,${{fileBase64}}`;
                 img.alt = filePath.split('/').pop();
                 container.appendChild(img);
             }} else {{
+                // 创建文本内容元素
                 const pre = document.createElement('pre');
                 pre.className = 'text-content';
                 pre.textContent = fileContent;
@@ -140,6 +150,7 @@ def generate_file_viewer_html(file_path: str) -> str:
         }}
     }}
 
+    // 页面加载时执行内容加载
     window.onload = loadContent;
     </script>
 </body>
