@@ -1,25 +1,25 @@
-# 导入 LLM 工具相关类型
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
-# 基于 LLM 的文件编辑工具的详细描述
-_FILE_EDIT_DESCRIPTION = """以纯文本格式编辑文件。
-* 助手可以通过指定文件路径并提供新文件内容的草稿来编辑文件。
-* 草稿内容不需要与现有文件完全相同；助手可以使用如 `# ... existing code ...` 这样的注释来跳过未更改的行，以表示未更改的部分。
-* 重要：对于大文件（例如 > 300 行），使用 `start` 和 `end`（从 1 开始索引，包含边界）指定要编辑的行范围。范围应小于 300 行。
-* -1 表示文件的最后一行，当用作 `start` 或 `end` 值时。
-* 尽可能在更改部分之前和之后至少保留一行未更改的内容。
-* 确保设置 `start` 和 `end` 以包含新文件内容草稿中引用的原始文件中的所有行。否则将导致错误的编辑。
-* 要向文件追加内容，将 `start` 和 `end` 都设置为 `-1`。
-* 如果文件不存在，将使用提供的内容创建新文件。
-* 重要：确保在草稿中包含每行代码所需的所有缩进，否则编辑后的代码将缩进不正确。
-* 重要：确保草稿的第一行也正确缩进并具有所需的空白字符。
-* 重要：永远不要在草稿中包含或引用 `start` 和 `end` 范围之外的行。
-* 重要：以格式为 #EDIT: 编辑原因 的注释开始内容
-* 重要：如果您不是在向文件追加内容，避免将 `start` 和 `end` 设置为相同的值。
+# 基于LLM的文件编辑工具详细描述
+# 包含完整的文件编辑指导、限制条件和多个示例
+_FILE_EDIT_DESCRIPTION = """Edit a file in plain-text format.
+* The assistant can edit files by specifying the file path and providing a draft of the new file content.
+* The draft content doesn't need to be exactly the same as the existing file; the assistant may skip unchanged lines using comments like `# ... existing code ...` to indicate unchanged sections.
+* IMPORTANT: For large files (e.g., > 300 lines), specify the range of lines to edit using `start` and `end` (1-indexed, inclusive). The range should be smaller than 300 lines.
+* -1 indicates the last line of the file when used as the `start` or `end` value.
+* Keep at least one unchanged line before the changed section and after the changed section wherever possible.
+* Make sure to set the `start` and `end` to include all the lines in the original file referred to in the draft of the new file content. Failure to do so will result in bad edits.
+* To append to a file, set both `start` and `end` to `-1`.
+* If the file doesn't exist, a new file will be created with the provided content.
+* IMPORTANT: Make sure you include all the required indentations for each line of code in the draft, otherwise the edited code will be incorrectly indented.
+* IMPORTANT: Make sure that the first line of the draft is also properly indented and has the required whitespaces.
+* IMPORTANT: NEVER include or make references to lines from outside the `start` and `end` range in the draft.
+* IMPORTANT: Start the content with a comment in the format: #EDIT: Reason for edit
+* IMPORTANT: If you are not appending to the file, avoid setting `start` and `end` to the same value.
 
-**示例 1：短文件的常规编辑**
-例如，给定一个现有文件 `/path/to/file.py`，内容如下：
-(这是文件的开始)
+**Example 1: general edit for short files**
+For example, given an existing file `/path/to/file.py` that looks like this:
+(this is the beginning of the file)
 1|class MyClass:
 2|    def __init__(self):
 3|        self.x = 1
@@ -28,19 +28,19 @@ _FILE_EDIT_DESCRIPTION = """以纯文本格式编辑文件。
 6|
 7|print(MyClass().z)
 8|print(MyClass().x)
-(这是文件的结束)
+(this is the end of the file)
 
-助手想要编辑文件使其看起来像这样：
-(这是文件的开始)
+The assistant wants to edit the file to look like this:
+(this is the beginning of the file)
 1|class MyClass:
 2|    def __init__(self):
 3|        self.x = 1
 4|        self.y = 2
 5|
 6|print(MyClass().y)
-(这是文件的结束)
+(this is the end of the file)
 
-助手可以产生如下编辑动作：
+The assistant may produce an edit action like this:
 path="/path/to/file.txt" start=1 end=-1
 content=```
 #EDIT: I want to change the value of y to 2
@@ -52,9 +52,9 @@ class MyClass:
 print(MyClass().y)
 ```
 
-**示例 2：短文件的追加内容**
-例如，给定一个现有文件 `/path/to/file.py`，内容如下：
-(这是文件的开始)
+**Example 2: append to file for short files**
+For example, given an existing file `/path/to/file.py` that looks like this:
+(this is the beginning of the file)
 1|class MyClass:
 2|    def __init__(self):
 3|        self.x = 1
@@ -63,24 +63,24 @@ print(MyClass().y)
 6|
 7|print(MyClass().z)
 8|print(MyClass().x)
-(这是文件的结束)
+(this is the end of the file)
 
-要向文件追加以下行：
+To append the following lines to the file:
 ```python
 #EDIT: I want to print the value of y
 print(MyClass().y)
 ```
 
-助手可以产生如下编辑动作：
+The assistant may produce an edit action like this:
 path="/path/to/file.txt" start=-1 end=-1
 content=```
 print(MyClass().y)
 ```
 
-**示例 3：长文件的编辑**
+**Example 3: edit for long files**
 
-给定一个现有文件 `/path/to/file.py`，内容如下：
-(上面还有 1000 行)
+Given an existing file `/path/to/file.py` that looks like this:
+(1000 more lines above)
 1001|class MyClass:
 1002|    def __init__(self):
 1003|        self.x = 1
@@ -89,20 +89,20 @@ print(MyClass().y)
 1006|
 1007|print(MyClass().z)
 1008|print(MyClass().x)
-(下面还有 2000 行)
+(2000 more lines below)
 
-助手想要编辑文件使其看起来像这样：
+The assistant wants to edit the file to look like this:
 
-(上面还有 1000 行)
+(1000 more lines above)
 1001|class MyClass:
 1002|    def __init__(self):
 1003|        self.x = 1
 1004|        self.y = 2
 1005|
 1006|print(MyClass().y)
-(下面还有 2000 行)
+(2000 more lines below)
 
-助手可以产生如下编辑动作：
+The assistant may produce an edit action like this:
 path="/path/to/file.txt" start=1002 end=1008
 content=```
 #EDIT: I want to change the value of y to 2
@@ -115,34 +115,52 @@ content=```
 print(MyClass().y)
 ```
 """
+# 翻译：以纯文本格式编辑文件。
+# assistant可以通过指定文件路径和提供新文件内容草稿来编辑文件。
+# 草稿内容不需要与现有文件完全相同，可以使用注释跳过未更改的行。
+# 重要：对于大文件(>300行)，使用start和end指定编辑的行范围(1索引，包含)，范围应小于300行。
+# -1表示文件的最后一行。尽可能在更改部分前后保持至少一行不变。
+# 确保start和end包含草稿中引用的原文件的所有行。要追加到文件，将start和end都设为-1。
+# 如果文件不存在，将创建新文件。重要：确保草稿中每行代码都有正确的缩进。
+# 重要：草稿的第一行也要正确缩进。不要在草稿中包含或引用start和end范围外的行。
+# 重要：内容以格式为#EDIT: 编辑原因的注释开始。不要将start和end设为相同值(除非追加)。
 
-# 创建基于 LLM 的文件编辑工具配置
+# 基于LLM的文件编辑工具配置
+# 定义了文件编辑工具的参数，包括路径、内容、起始和结束行号
 LLMBasedFileEditTool = ChatCompletionToolParam(
-    type='function',
+    type='function',  # 工具类型为函数
     function=ChatCompletionToolParamFunctionChunk(
-        name='edit_file',  # 工具名称
-        description=_FILE_EDIT_DESCRIPTION,  # 工具描述
+        name='edit_file',  # 工具名称：编辑文件
+        description=_FILE_EDIT_DESCRIPTION,  # 工具的详细描述
         parameters={
-            'type': 'object',
+            'type': 'object',  # 参数类型为对象
             'properties': {
+                # 要编辑的文件的绝对路径
                 'path': {
                     'type': 'string',
-                    'description': '要编辑的文件的绝对路径。',
+                    'description': 'The absolute path to the file to be edited.',
+                    # 翻译：要编辑的文件的绝对路径
                 },
+                # 文件的新内容草稿
                 'content': {
                     'type': 'string',
-                    'description': '要编辑的文件的新内容草稿。注意助手可以跳过未更改的行。',
+                    'description': 'A draft of the new content for the file being edited. Note that the assistant may skip unchanged lines.',
+                    # 翻译：被编辑文件的新内容草稿。注意assistant可以跳过未更改的行
                 },
+                # 编辑的起始行号
                 'start': {
                     'type': 'integer',
-                    'description': '编辑的起始行号（从 1 开始索引，包含边界）。默认为 1。',
+                    'description': 'The starting line number for the edit (1-indexed, inclusive). Default is 1.',
+                    # 翻译：编辑的起始行号(1索引，包含)。默认为1
                 },
+                # 编辑的结束行号
                 'end': {
                     'type': 'integer',
-                    'description': '编辑的结束行号（从 1 开始索引，包含边界）。默认为 -1（文件末尾）。',
+                    'description': 'The ending line number for the edit (1-indexed, inclusive). Default is -1 (end of file).',
+                    # 翻译：编辑的结束行号(1索引，包含)。默认为-1(文件末尾)
                 },
             },
-            'required': ['path', 'content'],  # 必需参数
+            'required': ['path', 'content'],  # 必需参数：路径和内容
         },
     ),
 )

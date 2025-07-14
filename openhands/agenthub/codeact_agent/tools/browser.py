@@ -1,73 +1,77 @@
-# 导入 BrowserGym 的高级动作集
 from browsergym.core.action.highlevel import HighLevelActionSet
-# 导入 LLM 工具相关类型
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
-# 导入工具名称常量
 from openhands.llm.tool_names import BROWSER_TOOL_NAME
 
-# 从 browsergym/core/action/highlevel.py 配置浏览器动作空间
-# 创建浏览器高级动作集合，包含 bid（通过 ID）和 nav（导航）子集
+# 浏览器动作空间配置
+# 使用BrowserGym的高级动作集合，配置包含bid和nav子集，支持宽松解析和多动作执行
 _browser_action_space = HighLevelActionSet(
-    subsets=['bid', 'nav'],  # 启用的动作子集
-    strict=False,            # 对动作解析不严格，提高容错性
-    multiaction=True,        # 启用 Agent 一次执行多个动作
+    subsets=['bid', 'nav'],  # 动作子集：bid(browser element id)和nav(navigation)
+    strict=False,  # 对动作解析采用较宽松的模式，提高容错性
+    multiaction=True,  # 启用Agent一次执行多个动作的能力
 )
 
+
 # 浏览器工具的主要描述
-_BROWSER_DESCRIPTION = """使用 Python 代码与浏览器交互。仅在需要与网页交互时使用。
+# 说明了工具的基本用途、使用限制和特殊功能
+_BROWSER_DESCRIPTION = """Interact with the browser using Python code. Use it ONLY when you need to interact with a webpage.
 
-有关更多详细信息，请参阅 "code" 参数的描述。
+See the description of "code" parameter for more details.
 
-可以一次提供多个动作，但将按顺序执行，不会收到页面的反馈。
-超过 2-3 个动作通常会导致失败或意外行为。示例：
+Multiple actions can be provided at once, but will be executed sequentially without any feedback from the page.
+More than 2-3 actions usually leads to failure or unexpected behavior. Example:
 fill('a12', 'example with "quotes"')
 click('a51')
 click('48', button='middle', modifiers=['Shift'])
 
-您也可以使用浏览器查看 pdf、png、jpg 文件。
-您应该首先检查 /tmp/oh-server-url 的内容以获取服务器 URL，然后使用它通过 `goto("{server_url}/view?path={absolute_file_path}")` 查看文件。
-例如：`goto("http://localhost:8000/view?path=/workspace/test_document.pdf")`
-注意：在使用浏览器查看文件之前，应先将文件下载到本地机器。
+You can also use the browser to view pdf, png, jpg files.
+You should first check the content of /tmp/oh-server-url to get the server url, and then use it to view the file by `goto("{server_url}/view?path={absolute_file_path}")`.
+For example: `goto("http://localhost:8000/view?path=/workspace/test_document.pdf")`
+Note: The file should be downloaded to the local machine first before using the browser to view it.
 """
+# 翻译：使用Python代码与浏览器交互。仅在需要与网页交互时使用。
+# 可以同时提供多个动作，但会按顺序执行且无页面反馈。超过2-3个动作通常会导致失败或意外行为。
+# 也可以使用浏览器查看pdf、png、jpg文件。需要先检查服务器URL，然后通过goto方法查看文件。
+# 注意：在使用浏览器查看之前，文件应该先下载到本地机器。
 
-# 详细的浏览器工具功能描述
+# 浏览器工具详细功能描述
+# 包含15个可用函数的完整说明和使用示例
 _BROWSER_TOOL_DESCRIPTION = """
-以下 15 个函数可用。不支持其他任何功能。
+The following 15 functions are available. Nothing else is supported.
 
 goto(url: str)
-    描述：导航到一个 URL。
-    示例：
+    Description: Navigate to a url.
+    Examples:
         goto('http://www.example.com')
 
 go_back()
-    描述：导航到历史记录中的上一页。
-    示例：
+    Description: Navigate to the previous page in history.
+    Examples:
         go_back()
 
 go_forward()
-    描述：导航到历史记录中的下一页。
-    示例：
+    Description: Navigate to the next page in history.
+    Examples:
         go_forward()
 
 noop(wait_ms: float = 1000)
-    描述：什么都不做，可选择等待给定时间（以毫秒为单位）。
-    您可以使用此功能获取当前页面内容和/或等待页面加载。
-    示例：
+    Description: Do nothing, and optionally wait for the given time (in milliseconds).
+    You can use this to get the current page content and/or wait for the page to load.
+    Examples:
         noop()
 
         noop(500)
 
 scroll(delta_x: float, delta_y: float)
-    描述：水平和垂直滚动。数量以像素为单位，正值表示向右或向下滚动，负值表示向左或向上滚动。分发滚轮事件。
-    示例：
+    Description: Scroll horizontally and vertically. Amounts in pixels, positive for right or down scrolling, negative for left or up scrolling. Dispatches a wheel event.
+    Examples:
         scroll(0, 200)
 
         scroll(-50.2, -100.5)
 
 fill(bid: str, value: str)
-    描述：填写表单字段。它聚焦元素并使用输入的文本触发输入事件。适用于 <input>、<textarea> 和 [contenteditable] 元素。
-    示例：
+    Description: Fill out a form field. It focuses the element and triggers an input event with the entered text. It works for <input>, <textarea> and [contenteditable] elements.
+    Examples:
         fill('237', 'example value')
 
         fill('45', 'multi-line\nexample')
@@ -75,15 +79,15 @@ fill(bid: str, value: str)
         fill('a12', 'example with "quotes"')
 
 select_option(bid: str, options: str | list[str])
-    描述：在 <select> 元素中选择一个或多个选项。您可以指定选项值或标签进行选择。可以选择多个选项。
-    示例：
+    Description: Select one or multiple options in a <select> element. You can specify option value or label to select. Multiple options can be selected.
+    Examples:
         select_option('a48', 'blue')
 
         select_option('c48', ['red', 'green', 'blue'])
 
 click(bid: str, button: Literal['left', 'middle', 'right'] = 'left', modifiers: list[typing.Literal['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift']] = [])
-    描述：点击元素。
-    示例：
+    Description: Click an element.
+    Examples:
         click('a51')
 
         click('b22', button='right')
@@ -91,8 +95,8 @@ click(bid: str, button: Literal['left', 'middle', 'right'] = 'left', modifiers: 
         click('48', button='middle', modifiers=['Shift'])
 
 dblclick(bid: str, button: Literal['left', 'middle', 'right'] = 'left', modifiers: list[typing.Literal['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift']] = [])
-    描述：双击元素。
-    示例：
+    Description: Double click an element.
+    Examples:
         dblclick('12')
 
         dblclick('ca42', button='right')
@@ -100,13 +104,13 @@ dblclick(bid: str, button: Literal['left', 'middle', 'right'] = 'left', modifier
         dblclick('178', button='middle', modifiers=['Shift'])
 
 hover(bid: str)
-    描述：悬停在元素上。
-    示例：
+    Description: Hover over an element.
+    Examples:
         hover('b8')
 
 press(bid: str, key_comb: str)
-    描述：聚焦匹配元素并按下键组合。它接受键盘事件的 keyboardEvent.key 属性中发出的逻辑键名：Backquote、Minus、Equal、Backslash、Backspace、Tab、Delete、Escape、ArrowDown、End、Enter、Home、Insert、PageDown、PageUp、ArrowRight、ArrowUp、F1 - F12、Digit0 - Digit9、KeyA - KeyZ 等。您也可以指定要产生的单个字符，如 "a" 或 "#"。还支持以下修饰键快捷键：Shift、Control、Alt、Meta、ShiftLeft、ControlOrMeta。ControlOrMeta 在 Windows 和 Linux 上解析为 Control，在 macOS 上解析为 Meta。
-    示例：
+    Description: Focus the matching element and press a combination of keys. It accepts the logical key names that are emitted in the keyboardEvent.key property of the keyboard events: Backquote, Minus, Equal, Backslash, Backspace, Tab, Delete, Escape, ArrowDown, End, Enter, Home, Insert, PageDown, PageUp, ArrowRight, ArrowUp, F1 - F12, Digit0 - Digit9, KeyA - KeyZ, etc. You can alternatively specify a single character you'd like to produce such as "a" or "#". Following modification shortcuts are also supported: Shift, Control, Alt, Meta, ShiftLeft, ControlOrMeta. ControlOrMeta resolves to Control on Windows and Linux and to Meta on macOS.
+    Examples:
         press('88', 'Backspace')
 
         press('a26', 'ControlOrMeta+a')
@@ -114,58 +118,64 @@ press(bid: str, key_comb: str)
         press('a61', 'Meta+Shift+t')
 
 focus(bid: str)
-    描述：聚焦匹配元素。
-    示例：
+    Description: Focus the matching element.
+    Examples:
         focus('b455')
 
 clear(bid: str)
-    描述：清除输入字段。
-    示例：
+    Description: Clear the input field.
+    Examples:
         clear('996')
 
 drag_and_drop(from_bid: str, to_bid: str)
-    描述：执行拖放操作。悬停将被拖动的元素。按下鼠标左键。将鼠标移动到将接收拖放的元素。释放鼠标左键。
-    示例：
+    Description: Perform a drag & drop. Hover the element that will be dragged. Press left mouse button. Move mouse to the element that will receive the drop. Release left mouse button.
+    Examples:
         drag_and_drop('56', '498')
 
 upload_file(bid: str, file: str | list[str])
-    描述：点击元素并等待 "filechooser" 事件，然后选择一个或多个输入文件进行上传。相对文件路径相对于当前工作目录解析。空列表清除所选文件。
-    示例：
+    Description: Click an element and wait for a "filechooser" event, then select one or multiple input files for upload. Relative file paths are resolved relative to the current working directory. An empty list clears the selected files.
+    Examples:
         upload_file('572', '/home/user/my_receipt.pdf')
 
         upload_file('63', ['/home/bob/Documents/image.jpg', '/home/bob/Documents/file.zip'])
 """
+# 翻译：以下15个函数可用，不支持其他功能。
+# 包含导航(goto/go_back/go_forward)、等待(noop)、滚动(scroll)、表单填写(fill)、选项选择(select_option)、
+# 点击操作(click/dblclick)、悬停(hover)、按键(press)、焦点(focus)、清除(clear)、拖放(drag_and_drop)、文件上传(upload_file)等功能
 
-# 验证 BrowserGym 动作空间的一致性
-# 确保所有动作的签名和描述都包含在工具描述中
+# 验证BrowserGym动作空间的一致性
+# 确保工具描述中包含所有动作的签名和描述，防止版本不匹配
 for _, action in _browser_action_space.action_set.items():
-    # 检查动作签名是否在描述中
+    # 检查动作签名是否在工具描述中
     assert action.signature in _BROWSER_TOOL_DESCRIPTION, (
         f'Browser description mismatch. Please double check if the BrowserGym updated their action space.\n\nAction: {action.signature}'
     )
-    # 检查动作描述是否在描述中
+    # 检查动作描述是否在工具描述中
     assert action.description in _BROWSER_TOOL_DESCRIPTION, (
         f'Browser description mismatch. Please double check if the BrowserGym updated their action space.\n\nAction: {action.description}'
     )
 
-# 创建浏览器工具配置
+# 浏览器工具的完整配置
+# 定义了工具的类型、名称、描述和参数结构
 BrowserTool = ChatCompletionToolParam(
-    type='function',
+    type='function',  # 工具类型为函数
     function=ChatCompletionToolParamFunctionChunk(
-        name=BROWSER_TOOL_NAME,  # 工具名称常量
-        description=_BROWSER_DESCRIPTION,  # 工具主要描述
+        name=BROWSER_TOOL_NAME,  # 工具名称，从常量导入
+        description=_BROWSER_DESCRIPTION,  # 工具的主要描述
         parameters={
-            'type': 'object',
+            'type': 'object',  # 参数类型为对象
             'properties': {
+                # Python代码参数，用于浏览器交互
                 'code': {
                     'type': 'string',
                     'description': (
-                        '与浏览器交互的 Python 代码。\n'
-                        + _BROWSER_TOOL_DESCRIPTION  # 详细的功能描述
+                        'The Python code that interacts with the browser.\n'
+                        + _BROWSER_TOOL_DESCRIPTION
                     ),
+                    # 翻译：与浏览器交互的Python代码，包含所有可用函数的详细说明
                 }
             },
-            'required': ['code'],  # 必需参数
+            'required': ['code'],  # 必需参数列表，code参数是必需的
         },
     ),
 )
