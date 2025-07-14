@@ -1,4 +1,9 @@
-"""This runtime runs the action_execution_server directly on the local machine without Docker."""
+"""
+该运行时直接在本地机器上运行 action_execution_server，不使用 Docker。
+
+这是一个实验性功能，用于在受控环境中运行 OpenHands，
+避免了 Docker 的复杂性和开销。
+"""
 
 import os
 import shutil
@@ -45,7 +50,22 @@ from openhands.utils.tenacity_stop import stop_if_should_exit
 
 @dataclass
 class ActionExecutionServerInfo:
-    """Information about a running server process."""
+    """
+    关于正在运行的服务器进程的信息。
+    
+    该数据类存储了运行中的 action execution server 的所有相关信息，
+    包括进程、端口、线程和工作空间等。
+    
+    Attributes:
+        process (subprocess.Popen): 服务器进程对象
+        execution_server_port (int): 执行服务器端口号
+        vscode_port (int): VSCode 服务器端口号
+        app_ports (list[int]): 应用端口列表
+        log_thread (threading.Thread): 日志输出线程
+        log_thread_exit_event (threading.Event): 日志线程退出事件
+        temp_workspace (str | None): 临时工作空间路径，如果使用的话
+        workspace_mount_path (str): 工作空间挂载路径
+    """
 
     process: subprocess.Popen
     execution_server_port: int
@@ -57,29 +77,47 @@ class ActionExecutionServerInfo:
     workspace_mount_path: str
 
 
-# Global dictionary to track running server processes by session ID
+# 全局字典，通过 Session ID 跟踪正在运行的服务器进程
 _RUNNING_SERVERS: dict[str, ActionExecutionServerInfo] = {}
 
 
 def get_user_info() -> tuple[int, str | None]:
-    """Get user ID and username in a cross-platform way."""
+    """
+    以跨平台的方式获取用户 ID 和用户名。
+    
+    Returns:
+        tuple[int, str | None]: 用户 ID 和用户名的元组
+    """
     username = os.getenv('USER')
     if sys.platform == 'win32':
-        # On Windows, we don't use user IDs the same way
-        # Return a default value that won't cause issues
+        # 在 Windows 上，我们不以相同的方式使用用户 ID
+        # 返回一个不会导致问题的默认值
         return 1000, username
     else:
-        # On Unix systems, use os.getuid()
+        # 在 Unix 系统上，使用 os.getuid()
         return os.getuid(), username
 
 
 def check_dependencies(code_repo_path: str, check_browser: bool) -> None:
+    """
+    检查运行 LocalRuntime 所需的依赖项。
+    
+    Args:
+        code_repo_path (str): 代码仓库路径
+        check_browser (bool): 是否检查浏览器依赖
+        
+    Raises:
+        ValueError: 如果依赖项检查失败
+    """
     ERROR_MESSAGE = 'Please follow the instructions in https://github.com/All-Hands-AI/OpenHands/blob/main/Development.md to install OpenHands.'
+    
+    # 检查代码仓库路径是否存在
     if not os.path.exists(code_repo_path):
         raise ValueError(
             f'Code repo path {code_repo_path} does not exist. ' + ERROR_MESSAGE
         )
-    # Check jupyter is installed
+    
+    # 检查 Jupyter 是否已安装
     logger.debug('Checking dependencies: Jupyter')
     output = subprocess.check_output(
         [sys.executable, '-m', 'jupyter', '--version'],
@@ -90,16 +128,19 @@ def check_dependencies(code_repo_path: str, check_browser: bool) -> None:
     if 'jupyter' not in output.lower():
         raise ValueError('Jupyter is not properly installed. ' + ERROR_MESSAGE)
 
-    # Check libtmux is installed (skip on Windows)
+    # 检查 libtmux 是否已安装（在 Windows 上跳过）
     if sys.platform != 'win32':
         logger.debug('Checking dependencies: libtmux')
         import libtmux
 
         server = libtmux.Server()
         try:
+            # 创建测试 session
             session = server.new_session(session_name='test-session')
         except Exception:
             raise ValueError('tmux is not properly installed or available on the path.')
+        
+        # 测试 tmux 功能
         pane = session.attached_pane
         pane.send_keys('echo "test"')
         pane_output = '\n'.join(pane.cmd('capture-pane', '-p').stdout)
@@ -107,6 +148,7 @@ def check_dependencies(code_repo_path: str, check_browser: bool) -> None:
         if 'test' not in pane_output:
             raise ValueError('libtmux is not properly installed. ' + ERROR_MESSAGE)
 
+    # 如果需要检查浏览器
     if check_browser:
         logger.debug('Checking dependencies: browser')
         from openhands.runtime.browser.browser_env import BrowserEnv
@@ -116,15 +158,18 @@ def check_dependencies(code_repo_path: str, check_browser: bool) -> None:
 
 
 class LocalRuntime(ActionExecutionClient):
-    """This runtime will run the action_execution_server directly on the local machine.
-    When receiving an event, it will send the event to the server via HTTP.
+    """
+    本地运行时实现，直接在本地机器上运行 action_execution_server。
+    
+    当接收到事件时，会通过 HTTP 将事件发送到服务器。
+    这是一个实验性功能，不提供沙箱保护。
 
     Args:
-        config (OpenHandsConfig): The application configuration.
-        event_stream (EventStream): The event stream to subscribe to.
-        sid (str, optional): The session ID. Defaults to 'default'.
-        plugins (list[PluginRequirement] | None, optional): list of plugin requirements. Defaults to None.
-        env_vars (dict[str, str] | None, optional): Environment variables to set. Defaults to None.
+        config (OpenHandsConfig): 应用配置对象
+        event_stream (EventStream): 用于订阅的事件流
+        sid (str, optional): Session ID。默认为 'default'
+        plugins (list[PluginRequirement] | None, optional): 插件需求列表。默认为 None
+        env_vars (dict[str, str] | None, optional): 要设置的环境变量。默认为 None
     """
 
     def __init__(
@@ -140,6 +185,7 @@ class LocalRuntime(ActionExecutionClient):
         user_id: str | None = None,
         git_provider_tokens: PROVIDER_TOKEN_TYPE | None = None,
     ) -> None:
+        # 检查是否在 Windows 系统上运行
         self.is_windows = sys.platform == 'win32'
         if self.is_windows:
             logger.warning(
@@ -147,7 +193,9 @@ class LocalRuntime(ActionExecutionClient):
                 'For full functionality, please consider using WSL or Docker runtime.'
             )
 
+        # 保存配置对象
         self.config = config
+        # 获取用户信息
         self._user_id, self._username = get_user_info()
 
         logger.warning(
@@ -160,25 +208,30 @@ class LocalRuntime(ActionExecutionClient):
             f'Username: {self._username}.'
         )
 
-        # Initialize these values to be set in connect()
-        self._temp_workspace: str | None = None
-        self._execution_server_port = -1
-        self._vscode_port = -1
-        self._app_ports: list[int] = []
+        # 初始化这些值，将在 connect() 方法中设置
+        self._temp_workspace: str | None = None     # 临时工作空间路径
+        self._execution_server_port = -1            # 执行服务器端口
+        self._vscode_port = -1                      # VSCode 端口
+        self._app_ports: list[int] = []             # 应用端口列表
 
+        # 初始化 API URL
         self.api_url = (
             f'{self.config.sandbox.local_runtime_url}:{self._execution_server_port}'
         )
+        # 状态回调函数
         self.status_callback = status_callback
+        # 服务器进程对象
         self.server_process: subprocess.Popen[str] | None = None
-        self.action_semaphore = threading.Semaphore(1)  # Ensure one action at a time
-        self._log_thread_exit_event = threading.Event()  # Add exit event
+        # 确保一次只执行一个动作的信号量
+        self.action_semaphore = threading.Semaphore(1)
+        # 日志线程退出事件
+        self._log_thread_exit_event = threading.Event()
 
-        # Update env vars
+        # 更新环境变量
         if self.config.sandbox.runtime_startup_env_vars:
             os.environ.update(self.config.sandbox.runtime_startup_env_vars)
 
-        # Initialize the action_execution_server
+        # 初始化 action_execution_server
         super().__init__(
             config,
             event_stream,
@@ -192,22 +245,33 @@ class LocalRuntime(ActionExecutionClient):
             git_provider_tokens,
         )
 
-        # If there is an API key in the environment we use this in requests to the runtime
+        # 如果环境中有 API 密钥，在请求运行时时使用
         session_api_key = os.getenv('SESSION_API_KEY')
         if session_api_key:
             self.session.headers['X-Session-API-Key'] = session_api_key
 
     @property
     def action_execution_server_url(self) -> str:
+        """
+        获取 Action 执行服务器的 URL。
+        
+        Returns:
+            str: API URL
+        """
         return self.api_url
 
     async def connect(self) -> None:
-        """Start the action_execution_server on the local machine or connect to an existing one."""
+        """
+        在本地机器上启动 action_execution_server 或连接到现有的服务器。
+        
+        该方法会检查是否已有运行中的服务器，如果没有则创建新的服务器进程。
+        """
         self.set_runtime_status(RuntimeStatus.STARTING_RUNTIME)
 
-        # Check if there's already a server running for this session ID
+        # 检查该 Session ID 是否已有运行中的服务器
         if self.sid in _RUNNING_SERVERS:
             self.log('info', f'Connecting to existing server for session {self.sid}')
+            # 获取现有服务器信息
             server_info = _RUNNING_SERVERS[self.sid]
             self.server_process = server_info.process
             self._execution_server_port = server_info.execution_server_port
@@ -219,27 +283,29 @@ class LocalRuntime(ActionExecutionClient):
             self.config.workspace_mount_path_in_sandbox = (
                 server_info.workspace_mount_path
             )
+            # 更新 API URL
             self.api_url = (
                 f'{self.config.sandbox.local_runtime_url}:{self._execution_server_port}'
             )
         elif self.attach_to_existing:
-            # If we're supposed to attach to an existing server but none exists, raise an error
+            # 如果应该附加到现有服务器但找不到，抛出错误
             self.log('error', f'No existing server found for session {self.sid}')
             raise AgentRuntimeDisconnectedError(
                 f'No existing server found for session {self.sid}'
             )
         else:
-            # Set up workspace directory
+            # 设置工作空间目录
             if self.config.workspace_base is not None:
                 logger.warning(
                     f'Workspace base path is set to {self.config.workspace_base}. '
                     'It will be used as the path for the agent to run in. '
                     'Be careful, the agent can EDIT files in this directory!'
                 )
+                # 使用配置的工作空间路径
                 self.config.workspace_mount_path_in_sandbox = self.config.workspace_base
                 self._temp_workspace = None
             else:
-                # A temporary directory is created for the agent to run in
+                # 为 Agent 创建临时目录
                 logger.warning(
                     'Workspace base path is NOT set. Agent will run in a temporary directory.'
                 )
@@ -252,7 +318,7 @@ class LocalRuntime(ActionExecutionClient):
                 f'Using workspace directory: {self.config.workspace_mount_path_in_sandbox}'
             )
 
-            # Start a new server
+            # 启动新服务器
             self._execution_server_port = self._find_available_port(
                 EXECUTION_SERVER_PORT_RANGE
             )
@@ -270,24 +336,26 @@ class LocalRuntime(ActionExecutionClient):
                     or str(self._find_available_port(APP_PORT_RANGE_2))
                 ),
             ]
+            # 更新 API URL
             self.api_url = (
                 f'{self.config.sandbox.local_runtime_url}:{self._execution_server_port}'
             )
 
-            # Start the server process
+            # 启动服务器进程
             cmd = get_action_execution_server_startup_command(
                 server_port=self._execution_server_port,
                 plugins=self.plugins,
                 app_config=self.config,
-                python_prefix=[],
-                python_executable=sys.executable,
-                override_user_id=self._user_id,
-                override_username=self._username,
+                python_prefix=[],                    # 不使用前缀
+                python_executable=sys.executable,   # 使用当前 Python 解释器
+                override_user_id=self._user_id,     # 使用当前用户 ID
+                override_username=self._username,   # 使用当前用户名
             )
 
             self.log('info', f'Starting server with command: {cmd}')
+            # 准备环境变量
             env = os.environ.copy()
-            # Get the code repo path
+            # 获取代码仓库路径
             code_repo_path = os.path.dirname(os.path.dirname(openhands.__file__))
             env['PYTHONPATH'] = os.pathsep.join(
                 [code_repo_path, env.get('PYTHONPATH', '')]
@@ -296,31 +364,33 @@ class LocalRuntime(ActionExecutionClient):
             env['LOCAL_RUNTIME_MODE'] = '1'
             env['VSCODE_PORT'] = str(self._vscode_port)
 
-            # Derive environment paths using sys.executable
+            # 使用 sys.executable 派生环境路径
             interpreter_path = sys.executable
             python_bin_path = os.path.dirname(interpreter_path)
 
-            # Prepend the interpreter's bin directory to PATH for subprocesses
+            # 将解释器的 bin 目录添加到子进程的 PATH 前面
             env['PATH'] = f'{python_bin_path}{os.pathsep}{env.get("PATH", "")}'
             logger.debug(f'Updated PATH for subprocesses: {env["PATH"]}')
 
-            # Check dependencies using the derived env_root_path if not skipped
+            # 如果未跳过依赖检查，则使用派生的环境路径检查依赖
             if os.getenv('SKIP_DEPENDENCY_CHECK', '') != '1':
                 check_browser = self.config.enable_browser and sys.platform != 'win32'
                 check_dependencies(code_repo_path, check_browser)
 
+            # 启动服务器进程
             self.server_process = subprocess.Popen(  # noqa: S603
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-                env=env,
-                cwd=code_repo_path,  # Explicitly set the working directory
+                stdout=subprocess.PIPE,     # 捕获标准输出
+                stderr=subprocess.STDOUT,   # 将标准错误重定向到标准输出
+                universal_newlines=True,    # 使用文本模式
+                bufsize=1,                  # 行缓冲
+                env=env,                    # 环境变量
+                cwd=code_repo_path,         # 显式设置工作目录
             )
 
-            # Start a thread to read and log server output
+            # 启动线程来读取和记录服务器输出
             def log_output() -> None:
+                """日志输出线程函数，负责读取服务器进程的输出并记录。"""
                 if not self.server_process or not self.server_process.stdout:
                     self.log(
                         'error', 'Server process or stdout not available for logging.'
@@ -328,28 +398,27 @@ class LocalRuntime(ActionExecutionClient):
                     return
 
                 try:
-                    # Read lines while the process is running and stdout is available
+                    # 在进程运行且标准输出可用时读取行
                     while self.server_process.poll() is None:
-                        if self._log_thread_exit_event.is_set():  # Check exit event
+                        # 检查退出事件
+                        if self._log_thread_exit_event.is_set():
                             self.log('info', 'Log thread received exit signal.')
-                            break  # Exit loop if signaled
+                            break  # 如果收到信号则退出循环
+                        
                         line = self.server_process.stdout.readline()
                         if not line:
-                            # Process might have exited between poll() and readline()
+                            # 进程可能在 poll() 和 readline() 之间退出
                             break
                         self.log('info', f'Server: {line.strip()}')
 
-                    # Capture any remaining output after the process exits OR if signaled
-                    if (
-                        not self._log_thread_exit_event.is_set()
-                    ):  # Check again before reading remaining
+                    # 在进程退出后或收到信号时捕获任何剩余输出
+                    if not self._log_thread_exit_event.is_set():
                         self.log(
                             'info', 'Server process exited, reading remaining output.'
                         )
                         for line in self.server_process.stdout:
-                            if (
-                                self._log_thread_exit_event.is_set()
-                            ):  # Check inside loop too
+                            # 在循环内也检查
+                            if self._log_thread_exit_event.is_set():
                                 self.log(
                                     'info',
                                     'Log thread received exit signal while reading remaining output.',
@@ -358,17 +427,17 @@ class LocalRuntime(ActionExecutionClient):
                             self.log('info', f'Server (remaining): {line.strip()}')
 
                 except Exception as e:
-                    # Log the error, but don't prevent the thread from potentially exiting
+                    # 记录错误，但不阻止线程可能退出
                     self.log('error', f'Error reading server output: {e}')
                 finally:
-                    self.log(
-                        'info', 'Log output thread finished.'
-                    )  # Add log for thread exit
+                    # 为线程退出添加日志
+                    self.log('info', 'Log output thread finished.')
 
+            # 创建并启动日志线程
             self._log_thread = threading.Thread(target=log_output, daemon=True)
             self._log_thread.start()
 
-            # Store the server process in the global dictionary
+            # 在全局字典中存储服务器进程信息
             _RUNNING_SERVERS[self.sid] = ActionExecutionServerInfo(
                 process=self.server_process,
                 execution_server_port=self._execution_server_port,
@@ -383,9 +452,11 @@ class LocalRuntime(ActionExecutionClient):
         self.log('info', f'Waiting for server to become ready at {self.api_url}...')
         self.set_runtime_status(RuntimeStatus.STARTING_RUNTIME)
 
+        # 等待服务器就绪
         await call_sync_from_async(self._wait_until_alive)
 
         if not self.attach_to_existing:
+            # 设置初始环境
             await call_sync_from_async(self.setup_initial_env)
 
         self.log(
@@ -399,6 +470,16 @@ class LocalRuntime(ActionExecutionClient):
     def _find_available_port(
         self, port_range: tuple[int, int], max_attempts: int = 5
     ) -> int:
+        """
+        在指定范围内查找可用端口。
+        
+        Args:
+            port_range (tuple[int, int]): 端口范围 (最小值, 最大值)
+            max_attempts (int, optional): 最大尝试次数。默认为 5
+            
+        Returns:
+            int: 可用的端口号
+        """
         port = port_range[1]
         for _ in range(max_attempts):
             port = find_available_tcp_port(port_range[0], port_range[1])
@@ -413,11 +494,24 @@ class LocalRuntime(ActionExecutionClient):
         ),
     )
     def _wait_until_alive(self) -> bool:
-        """Wait until the server is ready to accept requests."""
+        """
+        等待服务器准备好接受请求。
+        
+        使用 tenacity 装饰器进行重试，每 2 秒检查一次，最多等待 120 秒。
+        
+        Returns:
+            bool: 如果服务器就绪返回 True
+            
+        Raises:
+            RuntimeError: 如果服务器进程死亡
+            Exception: 如果服务器未就绪
+        """
+        # 检查服务器进程是否仍在运行
         if self.server_process and self.server_process.poll() is not None:
             raise RuntimeError('Server process died')
 
         try:
+            # 发送健康检查请求
             response = self.session.get(f'{self.api_url}/alive')
             response.raise_for_status()
             return True
@@ -426,68 +520,90 @@ class LocalRuntime(ActionExecutionClient):
             raise
 
     async def execute_action(self, action: Action) -> Observation:
-        """Execute an action by sending it to the server."""
+        """
+        通过向服务器发送请求来执行动作。
+        
+        Args:
+            action (Action): 要执行的动作
+            
+        Returns:
+            Observation: 执行结果的观察
+            
+        Raises:
+            AgentRuntimeDisconnectedError: 如果运行时未初始化或连接丢失
+        """
         if not self.runtime_initialized:
             raise AgentRuntimeDisconnectedError('Runtime not initialized')
 
-        # Check if our server process is still valid
+        # 检查我们的服务器进程是否仍然有效
         if self.server_process is None:
-            # Check if there's a server in the global dictionary
+            # 检查全局字典中是否有服务器
             if self.sid in _RUNNING_SERVERS:
                 self.server_process = _RUNNING_SERVERS[self.sid].process
             else:
                 raise AgentRuntimeDisconnectedError('Server process not found')
 
-        # Check if the server process is still running
+        # 检查服务器进程是否仍在运行
         if self.server_process.poll() is not None:
-            # If the process died, remove it from the global dictionary
+            # 如果进程死亡，从全局字典中删除
             if self.sid in _RUNNING_SERVERS:
                 del _RUNNING_SERVERS[self.sid]
             raise AgentRuntimeDisconnectedError('Server process died')
 
+        # 使用信号量确保一次只执行一个动作
         with self.action_semaphore:
             try:
+                # 发送动作执行请求
                 response = await call_sync_from_async(
                     lambda: self.session.post(
                         f'{self.api_url}/execute_action',
                         json={'action': event_to_dict(action)},
                     )
                 )
+                # 将响应转换为观察对象
                 return observation_from_dict(response.json())
             except httpx.NetworkError:
                 raise AgentRuntimeDisconnectedError('Server connection lost')
 
     def close(self) -> None:
-        """Stop the server process if not in attach_to_existing mode."""
-        # If we're in attach_to_existing mode, don't close the server
+        """
+        如果不在 attach_to_existing 模式下，停止服务器进程。
+        
+        该方法会根据配置决定是否关闭服务器进程，并清理相关资源。
+        """
+        # 如果在 attach_to_existing 模式下，不关闭服务器
         if self.attach_to_existing:
             self.log(
                 'info',
                 f'Not closing server for session {self.sid} (attach_to_existing=True)',
             )
-            # Just clean up our reference to the process, but leave it running
+            # 只清理我们对进程的引用，但保持进程运行
             self.server_process = None
-            # Don't clean up temp workspace when attach_to_existing=True
+            # 当 attach_to_existing=True 时不清理临时工作空间
             super().close()
             return
 
-        # Signal the log thread to exit
+        # 向日志线程发送退出信号
         self._log_thread_exit_event.set()
 
-        # Remove from global dictionary
+        # 从全局字典中删除
         if self.sid in _RUNNING_SERVERS:
             del _RUNNING_SERVERS[self.sid]
 
+        # 终止服务器进程
         if self.server_process:
             self.server_process.terminate()
             try:
+                # 等待进程优雅退出
                 self.server_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                # 如果进程没有在超时时间内退出，强制杀死
                 self.server_process.kill()
             self.server_process = None
-            self._log_thread.join(timeout=5)  # Add timeout to join
+            # 等待日志线程结束，设置超时
+            self._log_thread.join(timeout=5)
 
-        # Clean up temp workspace if it exists and we created it
+        # 如果存在临时工作空间且我们创建了它，则清理
         if self._temp_workspace and not self.attach_to_existing:
             shutil.rmtree(self._temp_workspace)
             self._temp_workspace = None
@@ -496,15 +612,20 @@ class LocalRuntime(ActionExecutionClient):
 
     @classmethod
     async def delete(cls, conversation_id: str) -> None:
-        """Delete the runtime for a conversation."""
+        """
+        删除对话的运行时。
+        
+        Args:
+            conversation_id (str): 要删除的对话 ID
+        """
         if conversation_id in _RUNNING_SERVERS:
             logger.info(f'Deleting LocalRuntime for conversation {conversation_id}')
             server_info = _RUNNING_SERVERS[conversation_id]
 
-            # Signal the log thread to exit
+            # 向日志线程发送退出信号
             server_info.log_thread_exit_event.set()
 
-            # Terminate the server process
+            # 终止服务器进程
             if server_info.process:
                 server_info.process.terminate()
                 try:
@@ -512,47 +633,73 @@ class LocalRuntime(ActionExecutionClient):
                 except subprocess.TimeoutExpired:
                     server_info.process.kill()
 
-            # Wait for the log thread to finish
+            # 等待日志线程结束
             server_info.log_thread.join(timeout=5)
 
-            # Remove from global dictionary
+            # 从全局字典中删除
             del _RUNNING_SERVERS[conversation_id]
             logger.info(f'LocalRuntime for conversation {conversation_id} deleted')
 
     @property
     def runtime_url(self) -> str:
+        """
+        获取运行时 URL。
+        
+        根据环境变量或配置返回适当的运行时 URL。
+        
+        Returns:
+            str: 运行时 URL
+        """
+        # 首先检查环境变量
         runtime_url = os.getenv('RUNTIME_URL')
         if runtime_url:
             return runtime_url
 
-        # TODO: This could be removed if we had a straightforward variable containing the RUNTIME_URL in the K8 env.
+        # TODO: 如果我们在 K8 环境中有包含 RUNTIME_URL 的直接变量，这可以被移除
         runtime_url_pattern = os.getenv('RUNTIME_URL_PATTERN')
         hostname = os.getenv('HOSTNAME')
         if runtime_url_pattern and hostname:
+            # 从主机名中提取运行时 ID
             runtime_id = hostname.split('-')[1]
             runtime_url = runtime_url_pattern.format(runtime_id=runtime_id)
             return runtime_url
 
-        # Fallback to localhost
+        # 回退到 localhost
         return self.config.sandbox.local_runtime_url
 
     @property
     def vscode_url(self) -> str | None:
+        """
+        获取 VSCode 服务器的 URL。
+        
+        Returns:
+            str | None: VSCode URL，如果没有 token 则返回 None
+        """
         token = super().get_vscode_token()
         if not token:
             return None
+        
         runtime_url = self.runtime_url
         if 'localhost' in runtime_url:
+            # 本地运行时情况
             vscode_url = f'{self.runtime_url}:{self._vscode_port}'
         else:
-            # Similar to remote runtime...
+            # 类似于远程运行时的情况...
             parsed_url = urlparse(runtime_url)
             vscode_url = f'{parsed_url.scheme}://vscode-{parsed_url.netloc}'
+        
         return f'{vscode_url}/?tkn={token}&folder={self.config.workspace_mount_path_in_sandbox}'
 
     @property
     def web_hosts(self) -> dict[str, int]:
+        """
+        获取 web hosts 字典。
+        
+        Returns:
+            dict[str, int]: 主机到端口的映射字典
+        """
         hosts: dict[str, int] = {}
+        # 为每个应用端口创建主机映射
         for port in self._app_ports:
             hosts[f'{self.runtime_url}:{port}'] = port
         return hosts
